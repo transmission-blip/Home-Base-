@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Guitar Tuner</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <h1>Guitar Tuner</h1>
+
+    <button id="micButton" class="mic-button">Start Tuner</button>
+    <p id="status" class="status">Click "Start Tuner" and allow microphone access</p>
+
+    <div class="display">
+      <div class="note" id="note">–</div>
+      <div class="freq" id="frequency">0.0 Hz</div>
+    </div>
+
+    <div class="meter">
+      <div class="meter-scale">
+        <span>-50</span><span>-25</span><span>0</span><span>+25</span><span>+50</span>
+      </div>
+      <div class="meter-track">
+        <div class="meter-center"></div>
+        <div class="meter-needle" id="needle"></div>
+      </div>
+    </div>
+
+    <h2>Reference Tones</h2>
+    <p class="hint">Standard tuning (low to high). Tap a string to hear its pitch.</p>
+    <div class="strings" id="strings"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
