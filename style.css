@@ -51,6 +51,18 @@ h2 {
   color: var(--text-dim);
 }
 
+.tuning-select {
+  width: 100%;
+  padding: 10px 12px;
+  margin-top: 4px;
+  font-size: 0.95rem;
+  border: 1px solid #2c333d;
+  border-radius: 10px;
+  background: #232a33;
+  color: var(--text);
+  cursor: pointer;
+}
+
 .mic-button {
   width: 100%;
   padding: 14px;

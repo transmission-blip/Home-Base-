@@ -1,14 +1,52 @@
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const A4 = 440;
 
-const STRINGS = [
-  { name: "E", octave: 2, freq: 82.41 },
-  { name: "A", octave: 2, freq: 110.0 },
-  { name: "D", octave: 3, freq: 146.83 },
-  { name: "G", octave: 3, freq: 196.0 },
-  { name: "B", octave: 3, freq: 246.94 },
-  { name: "E", octave: 4, freq: 329.63 },
-];
+const TUNINGS = {
+  standard: {
+    label: "Standard (E A D G B E)",
+    strings: [
+      { name: "E", octave: 2, freq: 82.41 },
+      { name: "A", octave: 2, freq: 110.0 },
+      { name: "D", octave: 3, freq: 146.83 },
+      { name: "G", octave: 3, freq: 196.0 },
+      { name: "B", octave: 3, freq: 246.94 },
+      { name: "E", octave: 4, freq: 329.63 },
+    ],
+  },
+  openG: {
+    label: "Open G (D G D G B D)",
+    strings: [
+      { name: "D", octave: 2, freq: 73.42 },
+      { name: "G", octave: 2, freq: 98.0 },
+      { name: "D", octave: 3, freq: 146.83 },
+      { name: "G", octave: 3, freq: 196.0 },
+      { name: "B", octave: 3, freq: 246.94 },
+      { name: "D", octave: 4, freq: 293.66 },
+    ],
+  },
+  openD: {
+    label: "Open D (D A D F# A D)",
+    strings: [
+      { name: "D", octave: 2, freq: 73.42 },
+      { name: "A", octave: 2, freq: 110.0 },
+      { name: "D", octave: 3, freq: 146.83 },
+      { name: "F#", octave: 3, freq: 185.0 },
+      { name: "A", octave: 3, freq: 220.0 },
+      { name: "D", octave: 4, freq: 293.66 },
+    ],
+  },
+  openD6: {
+    label: "Open D6 (D A D F# A B)",
+    strings: [
+      { name: "D", octave: 2, freq: 73.42 },
+      { name: "A", octave: 2, freq: 110.0 },
+      { name: "D", octave: 3, freq: 146.83 },
+      { name: "F#", octave: 3, freq: 185.0 },
+      { name: "A", octave: 3, freq: 220.0 },
+      { name: "B", octave: 3, freq: 246.94 },
+    ],
+  },
+};
 
 const micButton = document.getElementById("micButton");
 const statusEl = document.getElementById("status");
@@ -16,6 +54,7 @@ const noteEl = document.getElementById("note");
 const freqEl = document.getElementById("frequency");
 const needleEl = document.getElementById("needle");
 const stringsEl = document.getElementById("strings");
+const tuningSelect = document.getElementById("tuningSelect");
 
 let audioContext = null;
 let analyser = null;
@@ -224,10 +263,25 @@ function playTone(frequency, button) {
   button.classList.add("playing");
 }
 
-STRINGS.forEach((string) => {
-  const button = document.createElement("button");
-  button.className = "string-button";
-  button.innerHTML = `<strong>${string.name}${string.octave}</strong><small>${string.freq.toFixed(2)} Hz</small>`;
-  button.addEventListener("click", () => playTone(string.freq, button));
-  stringsEl.appendChild(button);
+function renderStrings(tuningKey) {
+  stopTone();
+  stringsEl.innerHTML = "";
+  TUNINGS[tuningKey].strings.forEach((string) => {
+    const button = document.createElement("button");
+    button.className = "string-button";
+    button.innerHTML = `<strong>${string.name}${string.octave}</strong><small>${string.freq.toFixed(2)} Hz</small>`;
+    button.addEventListener("click", () => playTone(string.freq, button));
+    stringsEl.appendChild(button);
+  });
+}
+
+Object.entries(TUNINGS).forEach(([key, tuning]) => {
+  const option = document.createElement("option");
+  option.value = key;
+  option.textContent = tuning.label;
+  tuningSelect.appendChild(option);
 });
+
+tuningSelect.addEventListener("change", () => renderStrings(tuningSelect.value));
+
+renderStrings(tuningSelect.value);
