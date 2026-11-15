@@ -11,6 +11,14 @@ const FX_UI = {
       { key: "tone", label: "Tone", min: 0, max: 1, fmt: pct },
     ],
   },
+  trem: {
+    label: "Tremolo",
+    types: { off: "Off", smooth: "Smooth", choppy: "Choppy", autopan: "Auto-pan" },
+    params: [
+      { key: "rate", label: "Rate", min: 0.5, max: 12, step: 0.1, fmt: (v) => v.toFixed(1) + " Hz" },
+      { key: "depth", label: "Depth", min: 0, max: 1, fmt: pct },
+    ],
+  },
   delay: {
     label: "Delay",
     types: { off: "Off", slapback: "Slapback", digital: "Digital", tape: "Tape echo", pingpong: "Ping-pong" },
@@ -43,6 +51,7 @@ function pct(v) {
 function defaultFx() {
   return {
     dist: { type: "off", drive: 0.5, tone: 0.6 },
+    trem: { type: "off", rate: 5, depth: 0.6 },
     delay: { type: "off", time: 0.35, feedback: 0.35, mix: 0.35 },
     reverb: { type: "off", decay: 0.5, mix: 0.3 },
   };
@@ -161,7 +170,7 @@ function getIR(type, decay, sampleRate) {
   return buf;
 }
 
-/* ---------- Effect chain: distortion -> delay -> reverb ---------- */
+/* ---------- Effect chain: distortion -> tremolo -> delay -> reverb ---------- */
 
 function buildFx(ctx, fx) {
   const nodes = [];
@@ -196,6 +205,33 @@ function buildFx(ctx, fx) {
     tone.connect(post);
     head = post;
     Object.assign(P, { shaper, tone, post });
+  }
+
+  if (fx.trem.type !== "off") {
+    const lfo = mk(ctx.createOscillator());
+    const depth = gain(0);
+    let mod = lfo;
+    if (fx.trem.type === "choppy") {
+      // Square wave with the corners rounded off so it doesn't click
+      lfo.type = "square";
+      mod = filter("lowpass", 60);
+      lfo.connect(mod);
+    }
+    mod.connect(depth);
+    let stage;
+    if (fx.trem.type === "autopan") {
+      stage = mk(ctx.createStereoPanner());
+      depth.connect(stage.pan);
+    } else {
+      stage = gain(1);
+      depth.connect(stage.gain);
+      P.tremBase = stage.gain;
+    }
+    lfo.start();
+    oscs.push(lfo);
+    head.connect(stage);
+    head = stage;
+    Object.assign(P, { tremLfo: lfo, tremDepth: depth });
   }
 
   if (fx.delay.type !== "off") {
@@ -303,6 +339,15 @@ function buildFx(ctx, fx) {
       sp(P.tone.frequency, toneFreq(fx.dist.tone));
       sp(P.post.gain, distPostGain(fx.dist.type, fx.dist.drive));
     }
+    if (P.tremLfo) {
+      sp(P.tremLfo.frequency, fx.trem.rate);
+      if (P.tremBase) {
+        sp(P.tremBase, 1 - fx.trem.depth / 2);
+        sp(P.tremDepth.gain, fx.trem.depth / 2);
+      } else {
+        sp(P.tremDepth.gain, fx.trem.depth);
+      }
+    }
     if (P.wet) {
       P.delays.forEach((d) => sp(d.delayTime, fx.delay.time));
       P.fbs.forEach((g) => sp(g.gain, fx.delay.feedback));
@@ -334,7 +379,7 @@ function buildFx(ctx, fx) {
 }
 
 function fxTypes(fx) {
-  return fx.dist.type + "/" + fx.delay.type + "/" + fx.reverb.type;
+  return fx.dist.type + "/" + fx.trem.type + "/" + fx.delay.type + "/" + fx.reverb.type;
 }
 
 /* A full track strip: fx -> volume -> pan -> destination */
@@ -368,6 +413,196 @@ function audibleGain(track, anySolo) {
   return track.mute || (anySolo && !track.solo) ? 0 : track.volume;
 }
 
+/* ---------- Tuning: detect how far a track sits from concert pitch, then shift it ---------- */
+
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      let t = re[i];
+      re[i] = re[j];
+      re[j] = t;
+      t = im[i];
+      im[i] = im[j];
+      im[j] = t;
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (-2 * Math.PI) / len;
+    const wr = Math.cos(ang);
+    const wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1;
+      let ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const a = i + k;
+        const b = a + len / 2;
+        const xr = re[b] * cr - im[b] * ci;
+        const xi = re[b] * ci + im[b] * cr;
+        re[b] = re[a] - xr;
+        im[b] = im[a] - xi;
+        re[a] += xr;
+        im[a] += xi;
+        const t = cr * wr - ci * wi;
+        ci = cr * wi + ci * wr;
+        cr = t;
+      }
+    }
+  }
+}
+
+/* Average distance (in cents) of the track's notes from the nearest A440 semitone.
+   Works on chords: every strong spectral peak votes, and votes wrap around the semitone. */
+function detectTuning(buffer) {
+  const data = buffer.getChannelData(0);
+  const sr = buffer.sampleRate;
+  let N = 32768;
+  while (N > data.length && N > 4096) N >>= 1;
+  const frames = Math.max(1, Math.min(40, Math.floor((data.length / N) * 2)));
+  const step = frames > 1 ? (data.length - N) / (frames - 1) : 0;
+  const re = new Float32Array(N);
+  const im = new Float32Array(N);
+  const mag = new Float32Array(N / 2);
+  const lo = Math.ceil((100 * N) / sr);
+  const hi = Math.min(N / 2 - 2, Math.floor((1200 * N) / sr));
+  let C = 0;
+  let S = 0;
+  let W = 0;
+
+  for (let f = 0; f < frames; f++) {
+    const start = Math.max(0, Math.floor(f * step));
+    let energy = 0;
+    for (let i = 0; i < N; i++) {
+      const v = data[start + i] || 0;
+      energy += v * v;
+      re[i] = v * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N));
+      im[i] = 0;
+    }
+    if (Math.sqrt(energy / N) < 0.003) continue;
+    fft(re, im);
+    let max = 0;
+    for (let i = lo - 1; i <= hi + 1; i++) {
+      mag[i] = Math.hypot(re[i], im[i]);
+      if (mag[i] > max) max = mag[i];
+    }
+    for (let i = lo; i <= hi; i++) {
+      const b = mag[i];
+      if (b < max * 0.1 || b <= mag[i - 1] || b < mag[i + 1]) continue;
+      const la = Math.log(mag[i - 1] + 1e-12);
+      const lb = Math.log(b);
+      const lc = Math.log(mag[i + 1] + 1e-12);
+      const shift = (0.5 * (la - lc)) / (la - 2 * lb + lc);
+      const freq = ((i + shift) * sr) / N;
+      const midi = 69 + 12 * Math.log2(freq / 440);
+      const angle = (midi - Math.round(midi)) * 2 * Math.PI;
+      C += b * Math.cos(angle);
+      S += b * Math.sin(angle);
+      W += b;
+    }
+  }
+  if (!W) return null;
+  return { cents: (Math.atan2(S, C) * 100) / (2 * Math.PI), confidence: Math.hypot(C, S) / W };
+}
+
+/* Change length by `alpha` without changing pitch. For the ~1% changes tuning needs, the audio is
+   copied through untouched and only occasionally spliced at the best-matching spot. */
+function stretch(buffer, alpha) {
+  const N = 2048;
+  const hop = N / 2;
+  const range = 384;
+  const L = buffer.length;
+  const outLen = Math.round(L * alpha);
+  const out = new AudioBuffer({ length: outLen, numberOfChannels: buffer.numberOfChannels, sampleRate: buffer.sampleRate });
+  const x = buffer.getChannelData(0);
+  const win = new Float32Array(N);
+  for (let i = 0; i < N; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N);
+
+  const positions = [];
+  let prev = 0;
+  for (let k = 0; k * hop < outLen; k++) {
+    const nominal = Math.round((k * hop) / alpha);
+    let p = nominal;
+    if (k > 0) {
+      const cont = prev + hop;
+      if (Math.abs(cont - nominal) <= range) {
+        p = cont;
+      } else {
+        let best = -Infinity;
+        const from = Math.max(0, nominal - range / 2);
+        const to = Math.min(L - N, nominal + range / 2);
+        for (let c = from; c <= to; c++) {
+          let dot = 0;
+          let en = 1e-9;
+          for (let i = 0; i < N; i += 2) {
+            const v = x[c + i];
+            dot += v * (x[cont + i] || 0);
+            en += v * v;
+          }
+          const score = dot / Math.sqrt(en);
+          if (score > best) {
+            best = score;
+            p = c;
+          }
+        }
+      }
+    }
+    positions.push(p);
+    prev = p;
+  }
+
+  for (let ch = 0; ch < buffer.numberOfChannels; ch++) {
+    const src = buffer.getChannelData(ch);
+    const dst = out.getChannelData(ch);
+    positions.forEach((p, k) => {
+      const base = k * hop;
+      for (let i = 0; i < N && base + i < outLen; i++) {
+        const w = k === 0 && i < hop ? 1 : win[i];
+        dst[base + i] += w * (src[p + i] || 0);
+      }
+    });
+  }
+  return out;
+}
+
+/* Shift pitch by `cents` while keeping the original length, so the track stays in time. */
+async function pitchShift(buffer, cents) {
+  const ratio = Math.pow(2, cents / 1200);
+  const stretched = stretch(buffer, ratio);
+  const off = new OfflineAudioContext(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
+  const src = off.createBufferSource();
+  src.buffer = stretched;
+  src.playbackRate.value = ratio;
+  src.connect(off.destination);
+  src.start();
+  return off.startRendering();
+}
+
+function centsText(c) {
+  return (c > 0 ? "+" : "") + Math.round(c) + " cents";
+}
+
+async function applyTune(track) {
+  const job = (track.tuneJob = (track.tuneJob || 0) + 1);
+  const tune = track.tune;
+  if (tune.type === "off" || !tune.cents) {
+    track.playBuffer = null;
+    return;
+  }
+  setStatus("Retuning " + track.name + "…");
+  await new Promise((r) => setTimeout(r, 30)); // let the status paint before the heavy work
+  try {
+    const shifted = await pitchShift(track.buffer, tune.cents);
+    if (job !== track.tuneJob) return;
+    track.playBuffer = shifted;
+    setStatus(track.name + " retuned " + centsText(tune.cents) + ".");
+  } catch (e) {
+    if (job === track.tuneJob) setStatus("Couldn't retune " + track.name + ".", true);
+  }
+}
+
 /* ---------- State ---------- */
 
 const $ = (id) => document.getElementById(id);
@@ -380,7 +615,9 @@ const els = {
   stop: $("stopBtn"),
   rec: $("recBtn"),
   rewind: $("rewindBtn"),
-  metroOn: $("metroOn"),
+  metro: $("metroMode"),
+  beat: $("beat"),
+  playWhileRec: $("playWhileRec"),
   countIn: $("countIn"),
   bpm: $("bpm"),
   master: $("master"),
@@ -483,7 +720,7 @@ function startSources(t0, pos) {
     const end = t.offset + t.buffer.duration;
     if (pos >= end) return;
     const src = ctx.createBufferSource();
-    src.buffer = t.buffer;
+    src.buffer = t.playBuffer || t.buffer;
     src.connect(t.nodes.fx.input);
     if (pos < t.offset) src.start(t0 + (t.offset - pos), 0);
     else src.start(t0, pos - t.offset);
@@ -501,12 +738,12 @@ function stopSource(t) {
   }
 }
 
-function beginTransport(t0, pos) {
+function beginTransport(t0, pos, silent) {
   state.playing = true;
   state.startCtxTime = t0;
   state.startPos = pos;
   state.nextBeat = Math.ceil(pos / beatLen() - 1e-6);
-  startSources(t0, pos);
+  if (!silent) startSources(t0, pos);
   updateTransportUi();
 }
 
@@ -564,7 +801,7 @@ function click(time, accent) {
 }
 
 setInterval(() => {
-  if (!state.playing || !els.metroOn.checked) return;
+  if (!state.playing || els.metro.value !== "sound") return;
   const beat = beatLen();
   for (;;) {
     const t = state.startCtxTime + state.nextBeat * beat - state.startPos;
@@ -736,12 +973,14 @@ async function record() {
   const beat = beatLen();
   const countBeats = els.countIn.checked ? 4 : 0;
   const t0 = ctx.currentTime + 0.15 + countBeats * beat;
-  for (let k = countBeats; k >= 1; k--) click(t0 - k * beat, k === countBeats);
+  if (els.metro.value === "sound") {
+    for (let k = countBeats; k >= 1; k--) click(t0 - k * beat, k === countBeats);
+  }
 
   rec = { chunksL: [], chunksR: [], peaks: [], frames: 0, startPos: pos, done: null };
   mic.recorder.port.postMessage({ cmd: "start", frame: Math.round(t0 * ctx.sampleRate) });
   state.recording = true;
-  beginTransport(t0, pos);
+  beginTransport(t0, pos, !els.playWhileRec.checked);
   renderRecLane();
   setStatus(countBeats ? "Count-in…" : "Recording…");
 }
@@ -813,7 +1052,7 @@ function micErrorMessage(err) {
 
 /* ---------- Tracks ---------- */
 
-function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = false, solo = false, fx, color }, skipSave) {
+function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = false, solo = false, fx, tune, color }, skipSave) {
   const track = {
     id: id || nextId,
     name,
@@ -824,6 +1063,8 @@ function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = 
     mute,
     solo,
     fx: fx || defaultFx(),
+    tune: Object.assign({ type: "off", cents: 0 }, tune),
+    playBuffer: null,
     color: color || TRACK_COLORS[(id || nextId) % TRACK_COLORS.length],
     nodes: null,
     source: null,
@@ -956,6 +1197,7 @@ function renderTrack(track) {
 
   const fxRow = el("div", "fx");
   Object.keys(FX_UI).forEach((kind) => fxRow.append(renderFxBlock(track, kind)));
+  fxRow.append(renderTuneBlock(track));
 
   root.append(main, fxRow);
   track.el = root;
@@ -1012,6 +1254,75 @@ function renderFxBlock(track, kind) {
     fxChanged(track);
   });
 
+  return block;
+}
+
+function renderTuneBlock(track) {
+  const tune = track.tune;
+  const block = el("div", "fx-block tune");
+  const title = el("div", "fx-title");
+  const select = el("select");
+  select.setAttribute("aria-label", "Tuning mode");
+  [["off", "Off"], ["auto", "Auto-tune"], ["manual", "Manual"]].forEach(([value, label]) => {
+    const opt = el("option", "", label);
+    opt.value = value;
+    select.append(opt);
+  });
+  title.append(el("span", "", "Tuning"), select);
+
+  const row = el("label", "fx-param");
+  const slider = rangeInput(-100, 100, 1, tune.cents);
+  const val = el("span", "fx-val");
+  row.append(el("span", "", "Shift"), slider, val);
+  const note = el("p", "fx-note");
+  block.append(title, row, note);
+
+  const sync = () => {
+    select.value = tune.type;
+    slider.value = tune.cents;
+    val.textContent = (tune.cents > 0 ? "+" : "") + tune.cents + " ¢";
+    block.classList.toggle("on", tune.type !== "off");
+  };
+  block.title = "Shifts the whole recording to concert pitch. It can't fix single notes that are out with each other.";
+  const commit = () => {
+    sync();
+    saveMeta();
+    return applyTune(track);
+  };
+
+  select.addEventListener("change", async () => {
+    tune.type = select.value;
+    note.textContent = "";
+    if (tune.type === "auto") {
+      note.textContent = "Listening…";
+      await new Promise((r) => setTimeout(r, 30));
+      const found = detectTuning(track.buffer);
+      if (!found || found.confidence < 0.2) {
+        tune.cents = 0;
+        note.textContent = "Couldn't hear a steady pitch to tune to. Try Manual.";
+      } else {
+        const off = Math.round(found.cents);
+        tune.cents = -off;
+        note.textContent = Math.abs(off) < 3
+          ? "Already at concert pitch — nothing to fix."
+          : "Sits " + Math.abs(off) + " cents " + (off < 0 ? "flat" : "sharp") + " overall — shifted " + (off < 0 ? "up" : "down") + " to match.";
+      }
+    }
+    commit();
+  });
+  slider.addEventListener("input", () => {
+    val.textContent = (slider.value > 0 ? "+" : "") + slider.value + " ¢";
+  });
+  slider.addEventListener("change", () => {
+    tune.cents = Number(slider.value);
+    if (tune.type !== "manual") {
+      tune.type = "manual";
+      note.textContent = "";
+    }
+    commit();
+  });
+
+  sync();
   return block;
 }
 
@@ -1119,8 +1430,28 @@ function tick() {
   if (state.playing && !state.recording && pos >= projectLength() + 0.2) {
     stop().then(() => (state.pos = 0));
   }
+  let beatOn = false;
+  let beatAccent = false;
+  if (state.playing) {
+    const beat = beatLen();
+    const rel = ctx.currentTime - state.startCtxTime;
+    const x = rel < 0 ? rel / beat : (rel + state.startPos) / beat;
+    const idx = Math.floor(x + 1e-6);
+    if (rel < 0) {
+      // Count-in always shows on screen, even with the click sound off
+      beatOn = idx >= -4 && (x - idx) * beat < 0.15;
+      beatAccent = true;
+      if (state.recording) setStatus("Count-in… " + Math.min(4, -idx));
+    } else if (els.metro.value !== "off") {
+      beatOn = (x - idx) * beat < 0.12;
+      beatAccent = idx % 4 === 0;
+    }
+  }
+  els.beat.classList.toggle("on", beatOn);
+  els.beat.classList.toggle("accent", beatOn && beatAccent);
+
   if (state.recording) {
-    if (ctx.currentTime >= state.startCtxTime && els.status.textContent === "Count-in…") setStatus("Recording…");
+    if (ctx.currentTime >= state.startCtxTime && els.status.textContent.startsWith("Count-in")) setStatus("Recording…");
     if (pos > state.viewDur - 2) {
       state.viewDur *= 1.5;
       tracks.forEach(drawWave);
@@ -1169,7 +1500,7 @@ async function renderMix() {
     if (audibleGain(t, solo) === 0) return;
     const strip = buildStrip(off, t, bus, solo);
     const src = off.createBufferSource();
-    src.buffer = t.buffer;
+    src.buffer = t.playBuffer || t.buffer;
     src.connect(strip.fx.input);
     src.start(t.offset);
   });
@@ -1283,11 +1614,12 @@ function saveMeta() {
 function writeMeta() {
   const meta = {
     bpm: els.bpm.value,
-    metro: els.metroOn.checked,
+    metro: els.metro.value,
+    playWhileRec: els.playWhileRec.checked,
     countIn: els.countIn.checked,
     master: els.master.value,
-    tracks: tracks.map(({ id, name, offset, volume, pan, mute, solo, fx, color }) => ({
-      id, name, offset, volume, pan, mute, solo, fx, color,
+    tracks: tracks.map(({ id, name, offset, volume, pan, mute, solo, fx, tune, color }) => ({
+      id, name, offset, volume, pan, mute, solo, fx, tune, color,
     })),
   };
   try {
@@ -1304,7 +1636,8 @@ async function loadProject() {
   } catch (e) {}
   if (!meta) return;
   els.bpm.value = meta.bpm || 100;
-  els.metroOn.checked = !!meta.metro;
+  els.metro.value = meta.metro === true ? "sound" : meta.metro || "off";
+  els.playWhileRec.checked = meta.playWhileRec !== false;
   els.countIn.checked = !!meta.countIn;
   els.master.value = meta.master || 1;
   for (const m of meta.tracks || []) {
@@ -1318,7 +1651,7 @@ async function loadProject() {
     stored.channels.forEach((ch, c) => buffer.copyToChannel(ch, c));
     const fx = defaultFx();
     Object.keys(fx).forEach((k) => Object.assign(fx[k], m.fx && m.fx[k]));
-    addTrack({ ...m, buffer, fx }, true);
+    applyTune(addTrack({ ...m, buffer, fx }, true));
   }
 }
 
@@ -1332,7 +1665,7 @@ els.master.addEventListener("input", () => {
   if (master) master.gain.setTargetAtTime(Number(els.master.value), ctx.currentTime, 0.015);
   saveMeta();
 });
-[els.bpm, els.metroOn, els.countIn].forEach((e) => e.addEventListener("change", saveMeta));
+[els.bpm, els.metro, els.countIn, els.playWhileRec].forEach((e) => e.addEventListener("change", saveMeta));
 els.latency.addEventListener("change", () => localStorage.setItem("hb-latency", els.latency.value));
 els.monitor.addEventListener("change", async () => {
   if (els.monitor.checked && !mic) {

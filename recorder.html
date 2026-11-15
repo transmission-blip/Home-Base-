@@ -22,8 +22,15 @@
       </div>
       <div class="time" id="time">0:00.0</div>
       <div class="group">
-        <label class="check"><input type="checkbox" id="metroOn" /> Metronome</label>
-        <label class="check"><input type="checkbox" id="countIn" /> Count-in</label>
+        <span class="beat" id="beat" title="Beat indicator"></span>
+        <label class="num" title="Silent flash keeps time on screen without any sound for the mic to pick up.">Click
+          <select id="metroMode">
+            <option value="off">Off</option>
+            <option value="flash">Silent flash</option>
+            <option value="sound">Sound</option>
+          </select>
+        </label>
+        <label class="check" title="One bar before recording starts. Silent unless Click is set to Sound."><input type="checkbox" id="countIn" /> Count-in</label>
         <label class="num">BPM <input type="number" id="bpm" min="40" max="240" value="100" /></label>
       </div>
       <div class="group">
@@ -38,6 +45,9 @@
       <label class="check" title="Hear your input while playing. Use headphones to avoid feedback.">
         <input type="checkbox" id="monitor" /> Monitor input
       </label>
+      <label class="check" title="Turn off when recording through the speaker without headphones, so earlier tracks don't get re-recorded by the mic.">
+        <input type="checkbox" id="playWhileRec" checked /> Play tracks while recording
+      </label>
       <label class="num" title="Shifts new recordings earlier to line them up with what you heard. Raise it if your takes sound late.">
         Latency fix <input type="number" id="latency" min="0" max="500" step="5" value="0" /> ms
       </label>
@@ -48,7 +58,8 @@
 
     <p id="empty" class="empty">
       No tracks yet. Press <strong>●</strong> to record your first layer, or import an audio file.
-      Wear headphones while recording so earlier tracks don't bleed into the mic.
+      No headphones? Set Click to <strong>Off</strong> or <strong>Silent flash</strong> and untick
+      <strong>Play tracks while recording</strong> so the mic only hears you.
     </p>
 
     <section class="actions">

@@ -360,18 +360,43 @@ select {
 
 .fx {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1px;
+  background: var(--border);
   border-top: 1px solid var(--border);
 }
 
 .fx-block {
   padding: 10px 12px 12px;
-  border-right: 1px solid var(--border);
   min-width: 0;
+  background: var(--panel);
 }
 
-.fx-block:last-child {
-  border-right: none;
+.fx-note {
+  margin: 8px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+
+.beat {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #0d1013;
+  border: 1px solid var(--border);
+}
+
+.beat.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+
+.beat.on.accent {
+  background: var(--accent-warn);
+  border-color: var(--accent-warn);
+  box-shadow: 0 0 14px var(--accent-warn);
 }
 
 .fx-title {
@@ -431,11 +456,16 @@ select {
   .fx {
     grid-template-columns: 1fr;
   }
-  .fx-block {
-    border-right: none;
-    border-bottom: 1px solid var(--border);
-  }
   .status {
     text-align: left;
   }
+}
+
+/* Tuning sits on its own row under the four effects */
+.fx-block.tune {
+  grid-column: 1 / -1;
+}
+
+.fx-block.tune .fx-param {
+  max-width: 420px;
 }
