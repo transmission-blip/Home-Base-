@@ -1,0 +1,511 @@
+:root {
+  --bg: #14171c;
+  --panel: #1e232b;
+  --panel-2: #232a33;
+  --border: #2c333d;
+  --accent: #4caf7d;
+  --accent-warn: #e0a83a;
+  --accent-bad: #d9534f;
+  --text: #f2f4f7;
+  --text-dim: #93a0ad;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  padding: 20px;
+}
+
+.studio {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.nav-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.nav-link:hover {
+  text-decoration: underline;
+}
+
+.panel {
+  background: var(--panel);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 22px;
+}
+
+.transport {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+
+.transport-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.tbtn {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.tbtn:hover {
+  background: #2c343f;
+}
+
+.tbtn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08130d;
+}
+
+.tbtn.rec {
+  color: var(--accent-bad);
+}
+
+.tbtn.rec.active {
+  background: var(--accent-bad);
+  border-color: var(--accent-bad);
+  color: #fff;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    box-shadow: 0 0 0 6px rgba(217, 83, 79, 0.3);
+  }
+}
+
+.time {
+  font-variant-numeric: tabular-nums;
+  font-size: 1.7rem;
+  font-weight: 700;
+  min-width: 5.2em;
+}
+
+.group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+label {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.check,
+.num,
+.slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+input[type="number"] {
+  width: 64px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+input[type="range"] {
+  accent-color: var(--accent);
+  min-width: 0;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.select,
+select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.85rem;
+  max-width: 220px;
+}
+
+.small-btn {
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.small-btn:hover {
+  background: #2c343f;
+}
+
+.small-btn.accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08130d;
+  font-weight: 600;
+}
+
+.small-btn.danger {
+  color: var(--accent-bad);
+}
+
+.small-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.meter {
+  width: 140px;
+  height: 10px;
+  background: #0d1013;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+}
+
+.status {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  flex: 1 1 160px;
+  text-align: right;
+}
+
+.status.error {
+  color: var(--accent-bad);
+}
+
+.empty {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 40px 20px;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  line-height: 1.6;
+}
+
+.track {
+  background: var(--panel);
+  border-radius: 14px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  border-left: 4px solid var(--track-color, var(--accent));
+}
+
+.track-main {
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr);
+}
+
+.track-head {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-right: 1px solid var(--border);
+}
+
+.track-top {
+  display: flex;
+  gap: 6px;
+}
+
+.track-name {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.track-name:hover,
+.track-name:focus {
+  border-color: var(--border);
+  background: var(--panel-2);
+  outline: none;
+}
+
+.chip {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chip:hover {
+  color: var(--text);
+}
+
+.chip.mute.on {
+  background: var(--accent-warn);
+  border-color: var(--accent-warn);
+  color: #1c1400;
+}
+
+.chip.solo.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08130d;
+}
+
+.chip.del:hover {
+  color: var(--accent-bad);
+  border-color: var(--accent-bad);
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.lane {
+  position: relative;
+  min-height: 110px;
+  background: #171b21;
+  cursor: pointer;
+}
+
+.lane canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: #fff;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.track.recording {
+  --track-color: var(--accent-bad);
+}
+
+.rec-label {
+  color: var(--accent-bad);
+  font-weight: 700;
+  font-size: 0.95rem;
+  padding: 6px 8px;
+}
+
+.fx {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1px;
+  background: var(--border);
+  border-top: 1px solid var(--border);
+}
+
+.fx-block {
+  padding: 10px 12px 12px;
+  min-width: 0;
+  background: var(--panel);
+}
+
+.fx-note {
+  margin: 8px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+
+.beat {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #0d1013;
+  border: 1px solid var(--border);
+}
+
+.beat.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+
+.beat.on.accent {
+  background: var(--accent-warn);
+  border-color: var(--accent-warn);
+  box-shadow: 0 0 14px var(--accent-warn);
+}
+
+.fx-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.fx-block.on .fx-title {
+  color: var(--accent);
+}
+
+.fx-param {
+  display: grid;
+  grid-template-columns: 62px 1fr 56px;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.fx-block:not(.on) .fx-param {
+  opacity: 0.35;
+}
+
+.fx-val {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+@media (max-width: 760px) {
+  body {
+    padding: 10px;
+  }
+  .track-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .track-head {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .fx {
+    grid-template-columns: 1fr;
+  }
+  .status {
+    text-align: left;
+  }
+}
+
+.fx-panel > summary {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.fx-panel > summary:hover {
+  color: var(--text);
+}
+
+.fx.src {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.fx-block.tune .fx-param,
+.fx.src .fx-param {
+  max-width: 420px;
+}
+
+.chip.rev.on {
+  background: #5aa9e6;
+  border-color: #5aa9e6;
+  color: #06121c;
+}
+
+.track,
+.track-head,
+.fx-panel {
+  min-width: 0;
+}
+
+.track-name {
+  width: 0;
+}
+
+.chip {
+  flex: none;
+}
+
+@media (max-width: 760px) {
+  .fx,
+  .fx.src {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

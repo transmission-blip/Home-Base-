@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Home Base Recorder</title>
+<link rel="stylesheet" href="recorder.css" />
+</head>
+<body>
+  <div class="studio">
+    <header class="top">
+      <h1>Home Base Recorder</h1>
+      <a class="nav-link" href="index.html">Guitar Tuner →</a>
+    </header>
+
+    <section class="panel transport">
+      <div class="transport-buttons">
+        <button id="rewindBtn" class="tbtn" title="Back to start (Home)">⏮</button>
+        <button id="playBtn" class="tbtn" title="Play / Stop (Space)">▶</button>
+        <button id="stopBtn" class="tbtn" title="Stop">■</button>
+        <button id="recBtn" class="tbtn rec" title="Record a new track (R)">●</button>
+      </div>
+      <div class="time" id="time">0:00.0</div>
+      <div class="group">
+        <span class="beat" id="beat" title="Beat indicator"></span>
+        <label class="num" title="Silent flash keeps time on screen without any sound for the mic to pick up.">Click
+          <select id="metroMode">
+            <option value="off">Off</option>
+            <option value="flash">Silent flash</option>
+            <option value="sound">Sound</option>
+          </select>
+        </label>
+        <label class="check" title="One bar before recording starts. Silent unless Click is set to Sound."><input type="checkbox" id="countIn" /> Count-in</label>
+        <label class="num">BPM <input type="number" id="bpm" min="40" max="240" value="100" /></label>
+      </div>
+      <div class="group">
+        <label class="slider">Master <input type="range" id="master" min="0" max="1.5" step="0.01" value="1" /></label>
+      </div>
+    </section>
+
+    <section class="panel io">
+      <button id="micBtn" class="small-btn">Enable microphone</button>
+      <div class="meter" title="Input level"><div class="meter-fill" id="inputMeter"></div></div>
+      <select id="deviceSelect" class="select" title="Input device" hidden></select>
+      <label class="check" title="Hear your input while playing. Use headphones to avoid feedback.">
+        <input type="checkbox" id="monitor" /> Monitor input
+      </label>
+      <label class="check" title="Turn off when recording through the speaker without headphones, so earlier tracks don't get re-recorded by the mic.">
+        <input type="checkbox" id="playWhileRec" checked /> Play tracks while recording
+      </label>
+      <label class="num" title="Shifts new recordings earlier to line them up with what you heard. Raise it if your takes sound late.">
+        Latency fix <input type="number" id="latency" min="0" max="500" step="5" value="0" /> ms
+      </label>
+      <span class="status" id="status"></span>
+    </section>
+
+    <section id="tracks" class="tracks"></section>
+
+    <p id="empty" class="empty">
+      No tracks yet. Press <strong>●</strong> to record your first layer, or import an audio file.
+      No headphones? Set Click to <strong>Off</strong> or <strong>Silent flash</strong> and untick
+      <strong>Play tracks while recording</strong> so the mic only hears you.
+    </p>
+
+    <section class="actions">
+      <button id="importBtn" class="small-btn">Import audio file</button>
+      <input type="file" id="fileInput" accept="audio/*" multiple hidden />
+      <button id="exportBtn" class="small-btn accent">Export mix (WAV)</button>
+      <button id="newBtn" class="small-btn danger">New project</button>
+    </section>
+  </div>
+
+  <script src="recorder.js"></script>
+</body>
+</html>
