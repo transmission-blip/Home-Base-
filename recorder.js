@@ -2,7 +2,33 @@
 
 /* ---------- Effect definitions ---------- */
 
+const dbText = (v) => (v > 0 ? "+" : "") + v + " dB";
+const hz = (v) => (v < 10 ? v.toFixed(1) : Math.round(v)) + " Hz";
+
 const FX_UI = {
+  eq: {
+    label: "EQ",
+    types: { off: "Off", custom: "Custom", phone: "Phone-mic fix", warm: "Warm", bright: "Bright" },
+    params: [
+      { key: "lowcut", label: "Low cut", min: 20, max: 400, step: 5, fmt: hz },
+      { key: "bass", label: "Bass", min: -12, max: 12, step: 0.5, fmt: dbText },
+      { key: "mid", label: "Mid", min: -12, max: 12, step: 0.5, fmt: dbText },
+      { key: "treble", label: "Treble", min: -12, max: 12, step: 0.5, fmt: dbText },
+    ],
+    presets: {
+      phone: { lowcut: 110, bass: 0, mid: -3, treble: 2 },
+      warm: { lowcut: 40, bass: 4, mid: 0, treble: -3 },
+      bright: { lowcut: 60, bass: -1, mid: 0, treble: 5 },
+    },
+  },
+  comp: {
+    label: "Compressor",
+    types: { off: "Off", gentle: "Gentle", heavy: "Heavy", squash: "Squash" },
+    params: [
+      { key: "amount", label: "Amount", min: 0, max: 1, fmt: pct },
+      { key: "makeup", label: "Make-up", min: 0, max: 18, step: 0.5, fmt: dbText },
+    ],
+  },
   dist: {
     label: "Distortion",
     types: { off: "Off", overdrive: "Overdrive", crunch: "Crunch", fuzz: "Fuzz", bitcrush: "Bitcrusher" },
@@ -11,12 +37,34 @@ const FX_UI = {
       { key: "tone", label: "Tone", min: 0, max: 1, fmt: pct },
     ],
   },
+  mod: {
+    label: "Modulation",
+    types: { off: "Off", chorus: "Chorus", vibrato: "Vibrato", flanger: "Flanger", phaser: "Phaser" },
+    params: [
+      { key: "rate", label: "Rate", min: 0.1, max: 8, step: 0.1, fmt: hz },
+      { key: "depth", label: "Depth", min: 0, max: 1, fmt: pct },
+    ],
+    presets: {
+      chorus: { rate: 0.8, depth: 0.5 },
+      vibrato: { rate: 5, depth: 0.3 },
+      flanger: { rate: 0.3, depth: 0.7 },
+      phaser: { rate: 0.5, depth: 0.7 },
+    },
+  },
   trem: {
     label: "Tremolo",
     types: { off: "Off", smooth: "Smooth", choppy: "Choppy", autopan: "Auto-pan" },
     params: [
       { key: "rate", label: "Rate", min: 0.5, max: 12, step: 0.1, fmt: (v) => v.toFixed(1) + " Hz" },
       { key: "depth", label: "Depth", min: 0, max: 1, fmt: pct },
+    ],
+  },
+  lofi: {
+    label: "Lo-fi",
+    types: { off: "Off", tape: "Tape", vinyl: "Vinyl", radio: "Old radio" },
+    params: [
+      { key: "wear", label: "Wear", min: 0, max: 1, fmt: pct },
+      { key: "noise", label: "Noise", min: 0, max: 1, fmt: pct },
     ],
   },
   delay: {
@@ -48,10 +96,20 @@ function pct(v) {
   return Math.round(v * 100) + "%";
 }
 
+const GATE_UI = {
+  label: "Noise gate",
+  types: { off: "Off", soft: "Soft", hard: "Hard" },
+  params: [{ key: "threshold", label: "Threshold", min: -70, max: -20, step: 1, fmt: dbText }],
+};
+
 function defaultFx() {
   return {
+    eq: { type: "off", lowcut: 20, bass: 0, mid: 0, treble: 0 },
+    comp: { type: "off", amount: 0.5, makeup: 0 },
     dist: { type: "off", drive: 0.5, tone: 0.6 },
+    mod: { type: "off", rate: 0.8, depth: 0.5 },
     trem: { type: "off", rate: 5, depth: 0.6 },
+    lofi: { type: "off", wear: 0.5, noise: 0.3 },
     delay: { type: "off", time: 0.35, feedback: 0.35, mix: 0.35 },
     reverb: { type: "off", decay: 0.5, mix: 0.3 },
   };
@@ -170,7 +228,33 @@ function getIR(type, decay, sampleRate) {
   return buf;
 }
 
-/* ---------- Effect chain: distortion -> tremolo -> delay -> reverb ---------- */
+/* ---------- Lo-fi noise beds ---------- */
+
+const noiseCache = new Map();
+
+function getNoise(kind, sampleRate) {
+  const key = kind + sampleRate;
+  if (noiseCache.has(key)) return noiseCache.get(key);
+  const len = sampleRate * 4;
+  const buf = new AudioBuffer({ length: len, numberOfChannels: 1, sampleRate });
+  const d = buf.getChannelData(0);
+  const rand = mulberry32(kind === "crackle" ? 99 : 7);
+  if (kind === "crackle") {
+    // Sparse pops over a faint surface hiss
+    let pop = 0;
+    for (let i = 0; i < len; i++) {
+      if (rand() < 0.00035) pop = (rand() * 2 - 1) * (0.3 + rand() * 0.7);
+      d[i] = pop + (rand() * 2 - 1) * 0.02;
+      pop *= 0.6;
+    }
+  } else {
+    for (let i = 0; i < len; i++) d[i] = rand() * 2 - 1;
+  }
+  noiseCache.set(key, buf);
+  return buf;
+}
+
+/* ---------- Effect chain: EQ -> compressor -> distortion -> modulation -> tremolo -> lo-fi -> delay -> reverb ---------- */
 
 function buildFx(ctx, fx) {
   const nodes = [];
@@ -193,6 +277,42 @@ function buildFx(ctx, fx) {
   let head = input;
   const P = {};
 
+  const lfoOsc = (type) => {
+    const o = mk(ctx.createOscillator());
+    if (type) o.type = type;
+    o.start();
+    oscs.push(o);
+    return o;
+  };
+  const chain = (...list) => {
+    for (let i = 1; i < list.length; i++) list[i - 1].connect(list[i]);
+    return list[list.length - 1];
+  };
+
+  if (fx.eq.type !== "off") {
+    const cut = filter("highpass", 20);
+    const bass = filter("lowshelf", 150);
+    const mid = filter("peaking", 1000);
+    mid.Q.value = 0.9;
+    const treble = filter("highshelf", 5000);
+    head = chain(head, cut, bass, mid, treble);
+    P.eq = { cut, bass, mid, treble };
+  }
+
+  if (fx.comp.type !== "off") {
+    const c = mk(ctx.createDynamicsCompressor());
+    const shape = {
+      gentle: { ratio: 3, knee: 20, attack: 0.01, release: 0.25 },
+      heavy: { ratio: 8, knee: 10, attack: 0.004, release: 0.2 },
+      squash: { ratio: 20, knee: 2, attack: 0.001, release: 0.12 },
+    }[fx.comp.type];
+    Object.entries(shape).forEach(([k, v]) => (c[k].value = v));
+    const makeup = gain(1);
+    head = chain(head, c, makeup);
+    P.comp = c;
+    P.makeup = makeup;
+  }
+
   if (fx.dist.type !== "off") {
     const shaper = mk(ctx.createWaveShaper());
     shaper.oversample = fx.dist.type === "bitcrush" ? "none" : "4x";
@@ -205,6 +325,64 @@ function buildFx(ctx, fx) {
     tone.connect(post);
     head = post;
     Object.assign(P, { shaper, tone, post });
+  }
+
+  if (fx.mod.type !== "off") {
+    const type = fx.mod.type;
+    const out = gain(1);
+    P.modLfos = [];
+    P.modDepths = []; // [gainNode, scale]
+    const lfoInto = (param, scale, rateMul) => {
+      const lfo = lfoOsc();
+      const depth = gain(0);
+      lfo.connect(depth);
+      depth.connect(param);
+      P.modLfos.push([lfo, rateMul]);
+      P.modDepths.push([depth, scale]);
+    };
+    if (type === "phaser") {
+      const stages = [];
+      for (let i = 0; i < 4; i++) {
+        const ap = filter("allpass", 900);
+        ap.Q.value = 0.6;
+        lfoInto(ap.frequency, 750, 1);
+        stages.push(ap);
+      }
+      // All four stages share one sweep: keep only the first LFO's rate entry meaningful
+      const wet = gain(0.7);
+      chain(head, ...stages, wet, out);
+      chain(head, gain(0.7), out);
+    } else {
+      const voice = (baseMs, depthMs, rateMul, panTo) => {
+        const d = mk(ctx.createDelay(0.1));
+        d.delayTime.value = baseMs / 1000;
+        lfoInto(d.delayTime, depthMs / 1000, rateMul);
+        head.connect(d);
+        let tail = d;
+        if (panTo) {
+          tail = mk(ctx.createStereoPanner());
+          tail.pan.value = panTo;
+          d.connect(tail);
+        }
+        return [d, tail];
+      };
+      if (type === "chorus") {
+        const wet = gain(0.6);
+        voice(18, 4, 1, -0.6)[1].connect(wet);
+        voice(26, 5, 1.31, 0.6)[1].connect(wet);
+        wet.connect(out);
+        chain(head, gain(0.8), out);
+      } else if (type === "vibrato") {
+        voice(6, 3, 1)[1].connect(out);
+      } else {
+        const [d] = voice(3.2, 2.6, 1);
+        const fb = gain(0.6);
+        chain(d, fb, d);
+        chain(d, gain(0.7), out);
+        chain(head, gain(0.7), out);
+      }
+    }
+    head = out;
   }
 
   if (fx.trem.type !== "off") {
@@ -232,6 +410,48 @@ function buildFx(ctx, fx) {
     head.connect(stage);
     head = stage;
     Object.assign(P, { tremLfo: lfo, tremDepth: depth });
+  }
+
+  if (fx.lofi.type !== "off") {
+    const type = fx.lofi.type;
+    const hp = filter("highpass", 100);
+    const shaper = mk(ctx.createWaveShaper());
+    const lp = filter("lowpass", 6000);
+    const out = gain(1);
+    let tail = chain(head, hp, shaper);
+    if (type !== "radio") {
+      // Wow (slow) and flutter (fast) wobble the playback speed like a worn transport
+      const wobble = mk(ctx.createDelay(0.1));
+      wobble.delayTime.value = 0.01;
+      const wow = lfoOsc();
+      wow.frequency.value = type === "vinyl" ? 0.55 : 0.7;
+      const wowDepth = gain(0);
+      chain(wow, wowDepth, wobble.delayTime);
+      P.wowDepth = wowDepth;
+      if (type === "tape") {
+        const flutter = lfoOsc();
+        flutter.frequency.value = 6.3;
+        const flutterDepth = gain(0);
+        chain(flutter, flutterDepth, wobble.delayTime);
+        P.flutterDepth = flutterDepth;
+      }
+      tail = chain(tail, wobble);
+    }
+    const post = gain(1);
+    chain(tail, lp, post, out);
+
+    const noise = mk(ctx.createBufferSource());
+    noise.buffer = getNoise(type === "vinyl" ? "crackle" : "hiss", ctx.sampleRate);
+    noise.loop = true;
+    const noiseTone = filter(type === "vinyl" ? "highpass" : "bandpass", type === "tape" ? 5000 : type === "radio" ? 1800 : 300);
+    const noiseLevel = gain(0);
+    // Live: the noise bed only runs while the transport does. Offline renders always include it.
+    const running = gain(ctx instanceof OfflineAudioContext ? 1 : 0);
+    chain(noise, noiseTone, noiseLevel, running, out);
+    noise.start();
+    oscs.push(noise);
+    head = out;
+    Object.assign(P, { lofiHp: hp, lofiShaper: shaper, lofiLp: lp, lofiPost: post, noiseLevel, running });
   }
 
   if (fx.delay.type !== "off") {
@@ -325,6 +545,7 @@ function buildFx(ctx, fx) {
   let first = true;
   let irKey = "";
   let curveKey = "";
+  let lofiKey = "";
   function set(fx) {
     const sp = (param, v) => {
       if (first) param.value = v;
@@ -338,6 +559,39 @@ function buildFx(ctx, fx) {
       }
       sp(P.tone.frequency, toneFreq(fx.dist.tone));
       sp(P.post.gain, distPostGain(fx.dist.type, fx.dist.drive));
+    }
+    if (P.eq) {
+      sp(P.eq.cut.frequency, fx.eq.lowcut);
+      sp(P.eq.bass.gain, fx.eq.bass);
+      sp(P.eq.mid.gain, fx.eq.mid);
+      sp(P.eq.treble.gain, fx.eq.treble);
+    }
+    if (P.comp) {
+      sp(P.comp.threshold, -10 - fx.comp.amount * 40);
+      // The browser compressor adds its own make-up gain; pull it back so switching it on is not a volume jump
+      sp(P.makeup.gain, 0.6 * Math.pow(10, fx.comp.makeup / 20));
+    }
+    if (P.modLfos) {
+      P.modLfos.forEach(([lfo, mul]) => sp(lfo.frequency, fx.mod.rate * mul));
+      P.modDepths.forEach(([g, scale]) => sp(g.gain, fx.mod.depth * scale));
+    }
+    if (P.lofiLp) {
+      const type = fx.lofi.type;
+      const wear = fx.lofi.wear;
+      const key = type + wear;
+      if (key !== lofiKey) {
+        const k = (type === "radio" ? 3 : 1.5) + wear * 5;
+        const curve = new Float32Array(2048);
+        for (let i = 0; i < 2048; i++) curve[i] = Math.tanh(k * ((i / 2047) * 2 - 1)) / Math.tanh(k);
+        P.lofiShaper.curve = curve;
+        lofiKey = key;
+        sp(P.lofiPost.gain, (1.6 * Math.tanh(k)) / k); // saturation lifts quiet signals; bring the level back
+      }
+      sp(P.lofiHp.frequency, type === "radio" ? 350 + wear * 250 : type === "vinyl" ? 60 : 80 + wear * 80);
+      sp(P.lofiLp.frequency, type === "radio" ? 3200 - wear * 1200 : type === "vinyl" ? 8000 - wear * 4000 : 9000 - wear * 6500);
+      if (P.wowDepth) sp(P.wowDepth.gain, wear * (type === "vinyl" ? 0.0012 : 0.0016));
+      if (P.flutterDepth) sp(P.flutterDepth.gain, wear * 0.00018);
+      sp(P.noiseLevel.gain, fx.lofi.noise * (type === "vinyl" ? 0.25 : type === "radio" ? 0.03 : 0.02));
     }
     if (P.tremLfo) {
       sp(P.tremLfo.frequency, fx.trem.rate);
@@ -375,11 +629,15 @@ function buildFx(ctx, fx) {
     nodes.forEach((n) => n.disconnect());
   }
 
-  return { input, output, set, dispose };
+  function run(on) {
+    if (P.running) P.running.gain.setTargetAtTime(on ? 1 : 0, ctx.currentTime, 0.03);
+  }
+
+  return { input, output, set, dispose, run };
 }
 
 function fxTypes(fx) {
-  return fx.dist.type + "/" + fx.trem.type + "/" + fx.delay.type + "/" + fx.reverb.type;
+  return Object.keys(FX_UI).map((k) => fx[k].type).join("/");
 }
 
 /* A full track strip: fx -> volume -> pan -> destination */
@@ -584,23 +842,82 @@ function centsText(c) {
   return (c > 0 ? "+" : "") + Math.round(c) + " cents";
 }
 
-async function applyTune(track) {
-  const job = (track.tuneJob = (track.tuneJob || 0) + 1);
+/* Noise gate: turns the track down whenever it falls below the threshold (hiss between phrases). */
+function gateBuffer(buffer, gate) {
+  const sr = buffer.sampleRate;
+  const n = buffer.length;
+  const chans = [];
+  for (let c = 0; c < buffer.numberOfChannels; c++) chans.push(buffer.getChannelData(c));
+  const out = new AudioBuffer({ length: n, numberOfChannels: chans.length, sampleRate: sr });
+  const open = Math.pow(10, gate.threshold / 20);
+  const close = open * 0.5;
+  const floor = gate.type === "soft" ? 0.2 : 0;
+  const look = Math.round(0.004 * sr);
+  const hold = Math.round(0.12 * sr);
+  const envDecay = Math.exp(-1 / (0.01 * sr));
+  const attack = 1 - Math.exp(-1 / (0.002 * sr));
+  const release = 1 - Math.exp(-1 / (0.12 * sr));
+  const gains = new Float32Array(n);
+  let env = 0;
+  let isOpen = false;
+  let held = 0;
+  let g = floor;
+  for (let i = 0; i < n; i++) {
+    const j = Math.min(n - 1, i + look); // listen slightly ahead so note starts aren't clipped
+    let a = 0;
+    for (let c = 0; c < chans.length; c++) a = Math.max(a, Math.abs(chans[c][j]));
+    env = Math.max(a, env * envDecay);
+    if (env > open) {
+      isOpen = true;
+      held = hold;
+    } else if (env < close && isOpen && --held <= 0) {
+      isOpen = false;
+    }
+    const target = isOpen ? 1 : floor;
+    g += (target - g) * (target > g ? attack : release);
+    gains[i] = g;
+  }
+  chans.forEach((src, c) => {
+    const dst = out.getChannelData(c);
+    for (let i = 0; i < n; i++) dst[i] = src[i] * gains[i];
+  });
+  return out;
+}
+
+/* Rebuild what the track actually plays: recording -> tuning -> noise gate. */
+async function processSource(track) {
+  const job = (track.srcJob = (track.srcJob || 0) + 1);
   const tune = track.tune;
-  if (tune.type === "off" || !tune.cents) {
-    track.playBuffer = null;
-    return;
-  }
-  setStatus("Retuning " + track.name + "…");
-  await new Promise((r) => setTimeout(r, 30)); // let the status paint before the heavy work
+  const tuning = tune.type !== "off" && tune.cents;
+  const gating = track.gate.type !== "off";
   try {
-    const shifted = await pitchShift(track.buffer, tune.cents);
-    if (job !== track.tuneJob) return;
-    track.playBuffer = shifted;
-    setStatus(track.name + " retuned " + centsText(tune.cents) + ".");
+    let buf = track.buffer;
+    if (tuning) {
+      if (!track.tuned || track.tuned.cents !== tune.cents) {
+        setStatus("Retuning " + track.name + "…");
+        await new Promise((r) => setTimeout(r, 30)); // let the status paint before the heavy work
+        const shifted = await pitchShift(track.buffer, tune.cents);
+        if (job !== track.srcJob) return;
+        track.tuned = { cents: tune.cents, buffer: shifted };
+        setStatus(track.name + " retuned " + centsText(tune.cents) + ".");
+      }
+      buf = track.tuned.buffer;
+    }
+    if (gating) buf = gateBuffer(buf, track.gate);
+    track.playBuffer = buf === track.buffer ? null : buf;
   } catch (e) {
-    if (job === track.tuneJob) setStatus("Couldn't retune " + track.name + ".", true);
+    if (job === track.srcJob) setStatus("Couldn't process " + track.name + ".", true);
   }
+}
+
+function reverseTrack(track) {
+  for (let c = 0; c < track.buffer.numberOfChannels; c++) track.buffer.getChannelData(c).reverse();
+  track.reversed = !track.reversed;
+  track.tuned = null;
+  drawWave(track);
+  saveAudio(track);
+  saveMeta();
+  return processSource(track);
 }
 
 /* ---------- State ---------- */
@@ -681,6 +998,7 @@ function attachStrip(track) {
   }
   track.nodes = buildStrip(ctx, track, master, anySolo());
   if (track.source) track.source.connect(track.nodes.fx.input);
+  if (track.source && state.playing) track.nodes.fx.run(true);
 }
 
 function refreshGains() {
@@ -695,6 +1013,7 @@ function fxChanged(track) {
     if (track.nodes.types !== fxTypes(track.fx)) attachStrip(track);
     else track.nodes.fx.set(track.fx);
   }
+  updateFxSummary(track);
   saveMeta();
 }
 
@@ -725,6 +1044,7 @@ function startSources(t0, pos) {
     if (pos < t.offset) src.start(t0 + (t.offset - pos), 0);
     else src.start(t0, pos - t.offset);
     t.source = src;
+    t.nodes.fx.run(true);
   });
 }
 
@@ -764,6 +1084,7 @@ async function stop() {
   state.pos = currentPos();
   state.playing = false;
   tracks.forEach(stopSource);
+  tracks.forEach((t) => t.nodes && t.nodes.fx.run(false));
   if (state.recording) await finishRecording();
   updateTransportUi();
 }
@@ -1052,7 +1373,7 @@ function micErrorMessage(err) {
 
 /* ---------- Tracks ---------- */
 
-function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = false, solo = false, fx, tune, color }, skipSave) {
+function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = false, solo = false, fx, tune, gate, reversed = false, fxOpen = false, color }, skipSave) {
   const track = {
     id: id || nextId,
     name,
@@ -1064,6 +1385,9 @@ function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = 
     solo,
     fx: fx || defaultFx(),
     tune: Object.assign({ type: "off", cents: 0 }, tune),
+    gate: Object.assign({ type: "off", threshold: -45 }, gate),
+    reversed,
+    fxOpen,
     playBuffer: null,
     color: color || TRACK_COLORS[(id || nextId) % TRACK_COLORS.length],
     nodes: null,
@@ -1158,7 +1482,14 @@ function renderTrack(track) {
   del.addEventListener("click", () => {
     if (confirm('Delete "' + track.name + '"? This can\'t be undone.')) removeTrack(track);
   });
-  top.append(name, mute, solo, del);
+  const rev = el("button", "chip rev", "◀");
+  rev.title = "Reverse this track (press again to flip it back)";
+  rev.classList.toggle("on", track.reversed);
+  rev.addEventListener("click", () => {
+    reverseTrack(track);
+    rev.classList.toggle("on", track.reversed);
+  });
+  top.append(name, mute, solo, rev, del);
 
   const volRow = el("label", "row");
   const vol = rangeInput(0, 1.5, 0.01, track.volume);
@@ -1195,11 +1526,30 @@ function renderTrack(track) {
 
   main.append(head, lane);
 
+  const panel = el("details", "fx-panel");
+  panel.open = track.fxOpen;
+  panel.addEventListener("toggle", () => {
+    track.fxOpen = panel.open;
+    saveMeta();
+  });
+  const summary = el("summary");
+  track.summaryEl = el("span");
+  summary.append(track.summaryEl);
   const fxRow = el("div", "fx");
-  Object.keys(FX_UI).forEach((kind) => fxRow.append(renderFxBlock(track, kind)));
-  fxRow.append(renderTuneBlock(track));
+  Object.keys(FX_UI).forEach((kind) => fxRow.append(renderFxBlock(FX_UI[kind], track.fx[kind], () => fxChanged(track))));
+  const srcRow = el("div", "fx src");
+  srcRow.append(
+    renderTuneBlock(track),
+    renderFxBlock(GATE_UI, track.gate, () => {
+      updateFxSummary(track);
+      saveMeta();
+      processSource(track);
+    })
+  );
+  panel.append(summary, fxRow, srcRow);
+  updateFxSummary(track);
 
-  root.append(main, fxRow);
+  root.append(main, panel);
   track.el = root;
   track.canvas = canvas;
   track.playhead = playhead;
@@ -1207,9 +1557,17 @@ function renderTrack(track) {
   drawWave(track);
 }
 
-function renderFxBlock(track, kind) {
-  const ui = FX_UI[kind];
-  const settings = track.fx[kind];
+function updateFxSummary(track) {
+  if (!track.summaryEl) return;
+  const on = Object.keys(FX_UI)
+    .filter((k) => track.fx[k].type !== "off")
+    .map((k) => FX_UI[k].label + ": " + FX_UI[k].types[track.fx[k].type]);
+  if (track.tune.type !== "off") on.push("Tuning");
+  if (track.gate.type !== "off") on.push("Noise gate");
+  track.summaryEl.textContent = "Effects — " + (on.length ? on.join(", ") : "none on");
+}
+
+function renderFxBlock(ui, settings, onChange) {
   const block = el("div", "fx-block");
   block.classList.toggle("on", settings.type !== "off");
 
@@ -1233,7 +1591,7 @@ function renderFxBlock(track, kind) {
     slider.addEventListener("input", () => {
       settings[p.key] = Number(slider.value);
       val.textContent = p.fmt(settings[p.key]);
-      fxChanged(track);
+      onChange();
     });
     controls[p.key] = { slider, val, fmt: p.fmt };
     row.append(el("span", "", p.label), slider, val);
@@ -1251,7 +1609,7 @@ function renderFxBlock(track, kind) {
       });
     }
     block.classList.toggle("on", settings.type !== "off");
-    fxChanged(track);
+    onChange();
   });
 
   return block;
@@ -1286,8 +1644,9 @@ function renderTuneBlock(track) {
   block.title = "Shifts the whole recording to concert pitch. It can't fix single notes that are out with each other.";
   const commit = () => {
     sync();
+    updateFxSummary(track);
     saveMeta();
-    return applyTune(track);
+    return processSource(track);
   };
 
   select.addEventListener("change", async () => {
@@ -1618,8 +1977,8 @@ function writeMeta() {
     playWhileRec: els.playWhileRec.checked,
     countIn: els.countIn.checked,
     master: els.master.value,
-    tracks: tracks.map(({ id, name, offset, volume, pan, mute, solo, fx, tune, color }) => ({
-      id, name, offset, volume, pan, mute, solo, fx, tune, color,
+    tracks: tracks.map(({ id, name, offset, volume, pan, mute, solo, fx, tune, gate, reversed, fxOpen, color }) => ({
+      id, name, offset, volume, pan, mute, solo, fx, tune, gate, reversed, fxOpen, color,
     })),
   };
   try {
@@ -1651,7 +2010,7 @@ async function loadProject() {
     stored.channels.forEach((ch, c) => buffer.copyToChannel(ch, c));
     const fx = defaultFx();
     Object.keys(fx).forEach((k) => Object.assign(fx[k], m.fx && m.fx[k]));
-    applyTune(addTrack({ ...m, buffer, fx }, true));
+    processSource(addTrack({ ...m, buffer, fx }, true));
   }
 }
 

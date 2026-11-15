@@ -245,7 +245,7 @@ select {
 
 .track-main {
   display: grid;
-  grid-template-columns: 230px 1fr;
+  grid-template-columns: 270px minmax(0, 1fr);
 }
 
 .track-head {
@@ -418,7 +418,7 @@ select {
 
 .fx-param {
   display: grid;
-  grid-template-columns: 62px 1fr 48px;
+  grid-template-columns: 62px 1fr 56px;
   align-items: center;
   gap: 6px;
   font-size: 0.75rem;
@@ -447,7 +447,7 @@ select {
     padding: 10px;
   }
   .track-main {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .track-head {
     border-right: none;
@@ -461,11 +461,51 @@ select {
   }
 }
 
-/* Tuning sits on its own row under the four effects */
-.fx-block.tune {
-  grid-column: 1 / -1;
+.fx-panel > summary {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
 }
 
-.fx-block.tune .fx-param {
+.fx-panel > summary:hover {
+  color: var(--text);
+}
+
+.fx.src {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.fx-block.tune .fx-param,
+.fx.src .fx-param {
   max-width: 420px;
+}
+
+.chip.rev.on {
+  background: #5aa9e6;
+  border-color: #5aa9e6;
+  color: #06121c;
+}
+
+.track,
+.track-head,
+.fx-panel {
+  min-width: 0;
+}
+
+.track-name {
+  width: 0;
+}
+
+.chip {
+  flex: none;
+}
+
+@media (max-width: 760px) {
+  .fx,
+  .fx.src {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
