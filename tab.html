@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tab Transcriber</title>
+<link rel="stylesheet" href="tab.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="top">
+      <h1>Tab Transcriber</h1>
+      <nav>
+        <a class="nav-link" href="index.html">Tuner</a>
+        <a class="nav-link" href="recorder.html">Recorder</a>
+      </nav>
+    </header>
+
+    <section class="panel listen">
+      <button id="listenBtn" class="big-btn">● Listen and transcribe</button>
+      <button id="fileBtn" class="small-btn">Transcribe an audio file</button>
+      <input type="file" id="fileInput" accept="audio/*" hidden />
+      <div class="heard">
+        <div class="heard-note" id="heardNote">–</div>
+        <div class="heard-pos" id="heardPos">&nbsp;</div>
+      </div>
+      <div class="meter" title="Input level"><div class="meter-fill" id="meter"></div></div>
+      <p class="status" id="status">Play one note at a time and the tab writes itself. New takes are added after what's already there.</p>
+    </section>
+
+    <section class="panel settings">
+      <label class="field wide">Title
+        <input type="text" id="title" placeholder="Untitled" />
+      </label>
+      <label class="field">Tuning
+        <select id="tuning"></select>
+      </label>
+      <label class="field" title="How note timing becomes spacing on the tab.">Rhythm
+        <select id="mode">
+          <option value="auto">Follow my playing</option>
+          <option value="bpm">Snap to tempo</option>
+          <option value="even">Evenly spaced</option>
+        </select>
+      </label>
+      <label class="field" title="Tempo for playback, and for 'Snap to tempo'.">BPM
+        <input type="number" id="bpm" min="40" max="240" value="100" />
+      </label>
+    </section>
+
+    <section class="panel toolbar">
+      <button id="playBtn" class="small-btn accent" title="Play from the selected bar (Space)">▶ Play</button>
+      <button id="undoBtn" class="small-btn" title="Undo (Ctrl+Z)">Undo</button>
+      <button id="insertBtn" class="small-btn" title="Insert an empty column at the cursor">+ Column</button>
+      <button id="deleteBtn" class="small-btn" title="Delete the column at the cursor">− Column</button>
+      <span class="spacer"></span>
+      <button id="copyBtn" class="small-btn">Copy as text</button>
+      <button id="downloadBtn" class="small-btn">Download .txt</button>
+      <button id="clearBtn" class="small-btn danger">Clear</button>
+    </section>
+
+    <section class="tab" id="tab" tabindex="0" aria-label="Tablature. Select a position and type a fret number."></section>
+
+    <section class="pad" id="pad" aria-label="Fret entry"></section>
+
+    <p class="hint">
+      Tap any spot on a string and type a fret (two digits quickly for 10 and up). Arrow keys move,
+      Backspace clears. Each column is a sixteenth note. Listening hears one note at a time: for
+      chords, or notes left ringing over each other, type them in by hand.
+    </p>
+  </div>
+
+  <script src="tab-core.js"></script>
+  <script src="tab.js"></script>
+</body>
+</html>

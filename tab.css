@@ -1,0 +1,320 @@
+:root {
+  --bg: #14171c;
+  --panel: #1e232b;
+  --panel-2: #232a33;
+  --border: #2c333d;
+  --line: #4a5563;
+  --accent: #4caf7d;
+  --accent-warn: #e0a83a;
+  --accent-bad: #d9534f;
+  --text: #f2f4f7;
+  --text-dim: #93a0ad;
+  --cell-w: 18px;
+  --cell-h: 22px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  padding: 20px 12px 40px;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+nav {
+  display: flex;
+  gap: 16px;
+}
+
+.nav-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.nav-link:hover {
+  text-decoration: underline;
+}
+
+.panel {
+  background: var(--panel);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 18px;
+}
+
+.big-btn {
+  padding: 13px 20px;
+  font-size: 1rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #08130d;
+  cursor: pointer;
+}
+
+.big-btn:hover {
+  background: #59c98c;
+}
+
+.big-btn.active {
+  background: var(--accent-bad);
+  color: #fff;
+}
+
+.small-btn {
+  padding: 9px 13px;
+  font-size: 0.88rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.small-btn:hover {
+  background: #2c343f;
+}
+
+.small-btn.accent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08130d;
+  font-weight: 600;
+}
+
+.small-btn.danger {
+  color: #f0a5a2;
+}
+
+.small-btn:disabled,
+.big-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.heard {
+  min-width: 96px;
+  text-align: center;
+}
+
+.heard-note {
+  font-size: 1.9rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.heard-pos {
+  margin-top: 3px;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+}
+
+.meter {
+  width: 110px;
+  height: 8px;
+  border-radius: 5px;
+  background: #0d1013;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+}
+
+.status {
+  flex: 1 1 240px;
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+.field.wide {
+  flex: 1 1 180px;
+}
+
+.field input,
+.field select {
+  padding: 8px 10px;
+  font-size: 0.92rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.field input[type="number"] {
+  width: 84px;
+}
+
+.spacer {
+  flex: 1;
+}
+
+/* ---------- The tab itself ---------- */
+
+.tab {
+  background: var(--panel);
+  border-radius: 14px;
+  padding: 10px 12px 14px;
+  margin-bottom: 12px;
+  outline: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tab:focus-visible {
+  box-shadow: 0 0 0 2px var(--border);
+}
+
+.tab-row {
+  display: flex;
+  margin-top: 18px;
+}
+
+.labels {
+  width: 26px;
+  flex: none;
+  display: grid;
+  grid-template-rows: repeat(6, var(--cell-h));
+  font: 600 0.78rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-dim);
+  align-items: center;
+}
+
+.bar {
+  position: relative;
+  display: grid;
+  grid-template-rows: repeat(6, var(--cell-h));
+  grid-template-columns: repeat(16, var(--cell-w));
+  grid-auto-flow: column;
+  border-left: 1px solid var(--line);
+}
+
+.bar:last-child {
+  border-right: 1px solid var(--line);
+}
+
+.bar-num {
+  position: absolute;
+  top: -15px;
+  left: 3px;
+  font-size: 0.65rem;
+  color: var(--text-dim);
+}
+
+.cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font: 600 0.82rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  cursor: pointer;
+  background: linear-gradient(var(--line), var(--line)) center / 100% 1px no-repeat;
+}
+
+.cell.beat {
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.07);
+}
+
+.cell span {
+  background: var(--panel);
+  padding: 0 1px;
+  letter-spacing: -0.06em;
+}
+
+.cell:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.cell.playing {
+  background-color: rgba(76, 175, 125, 0.22);
+}
+
+.cell.playing span {
+  background: transparent;
+  color: #c9f2dc;
+}
+
+.cell.new span {
+  color: var(--accent-warn);
+}
+
+.cell.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+/* ---------- Fret pad (touch screens) ---------- */
+
+.pad {
+  position: sticky;
+  bottom: 8px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.pad button {
+  flex: 1 0 40px;
+  max-width: 64px;
+  padding: 10px 0;
+  font-size: 0.95rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.pad button:active {
+  background: var(--accent);
+  color: #08130d;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+}
