@@ -67,6 +67,11 @@ const FX_UI = {
       { key: "noise", label: "Noise", min: 0, max: 1, fmt: pct },
     ],
   },
+  dbl: {
+    label: "Double track",
+    types: { off: "Off", tight: "Tight", loose: "Loose" },
+    params: [{ key: "spread", label: "Width", min: 0, max: 1, fmt: pct }],
+  },
   delay: {
     label: "Delay",
     types: { off: "Off", slapback: "Slapback", digital: "Digital", tape: "Tape echo", pingpong: "Ping-pong" },
@@ -110,6 +115,7 @@ function defaultFx() {
     mod: { type: "off", rate: 0.8, depth: 0.5 },
     trem: { type: "off", rate: 5, depth: 0.6 },
     lofi: { type: "off", wear: 0.5, noise: 0.3 },
+    dbl: { type: "off", spread: 0.8 },
     delay: { type: "off", time: 0.35, feedback: 0.35, mix: 0.35 },
     reverb: { type: "off", decay: 0.5, mix: 0.3 },
   };
@@ -454,6 +460,26 @@ function buildFx(ctx, fx) {
     Object.assign(P, { lofiHp: hp, lofiShaper: shaper, lofiLp: lp, lofiPost: post, noiseLevel, running });
   }
 
+  if (fx.dbl.type !== "off") {
+    // A second "performance": a copy a few milliseconds late whose timing and pitch drift
+    // slightly, panned opposite the original
+    const loose = fx.dbl.type === "loose";
+    const out = gain(1);
+    const dryPan = mk(ctx.createStereoPanner());
+    const wetPan = mk(ctx.createStereoPanner());
+    const copy = mk(ctx.createDelay(0.1));
+    copy.delayTime.value = loose ? 0.034 : 0.019;
+    [[0.31, loose ? 0.004 : 0.0016], [0.83, loose ? 0.0012 : 0.0006]].forEach(([rate, depth]) => {
+      const lfo = lfoOsc();
+      lfo.frequency.value = rate;
+      chain(lfo, gain(depth), copy.delayTime);
+    });
+    chain(head, gain(0.85), dryPan, out);
+    chain(head, copy, gain(0.85), wetPan, out);
+    head = out;
+    P.dblPans = [dryPan, wetPan];
+  }
+
   if (fx.delay.type !== "off") {
     const type = fx.delay.type;
     const out = gain(1);
@@ -592,6 +618,10 @@ function buildFx(ctx, fx) {
       if (P.wowDepth) sp(P.wowDepth.gain, wear * (type === "vinyl" ? 0.0012 : 0.0016));
       if (P.flutterDepth) sp(P.flutterDepth.gain, wear * 0.00018);
       sp(P.noiseLevel.gain, fx.lofi.noise * (type === "vinyl" ? 0.25 : type === "radio" ? 0.03 : 0.02));
+    }
+    if (P.dblPans) {
+      sp(P.dblPans[0].pan, -fx.dbl.spread);
+      sp(P.dblPans[1].pan, fx.dbl.spread);
     }
     if (P.tremLfo) {
       sp(P.tremLfo.frequency, fx.trem.rate);
@@ -979,6 +1009,7 @@ function ensureCtx() {
     clickBus = ctx.createGain();
     clickBus.gain.value = 0.5;
     clickBus.connect(ctx.destination);
+    backingInit(ctx, master);
     tracks.forEach(attachStrip);
   }
   if (ctx.state === "suspended") ctx.resume();
@@ -1064,13 +1095,14 @@ function beginTransport(t0, pos, silent) {
   state.startPos = pos;
   state.nextBeat = Math.ceil(pos / beatLen() - 1e-6);
   if (!silent) startSources(t0, pos);
+  backingStart(silent);
   updateTransportUi();
 }
 
 function play() {
   if (state.playing) return;
-  if (!tracks.length) {
-    setStatus("Record or import a track first.");
+  if (!tracks.length && !backingActive()) {
+    setStatus("Record or import a track first, or switch on Drums or Chords.");
     return;
   }
   ensureCtx();
@@ -1085,6 +1117,7 @@ async function stop() {
   state.playing = false;
   tracks.forEach(stopSource);
   tracks.forEach((t) => t.nodes && t.nodes.fx.run(false));
+  backingStop();
   if (state.recording) await finishRecording();
   updateTransportUi();
 }
@@ -1489,7 +1522,15 @@ function renderTrack(track) {
     reverseTrack(track);
     rev.classList.toggle("on", track.reversed);
   });
-  top.append(name, mute, solo, rev, del);
+  const dbl = el("button", "chip dbl", "×2");
+  dbl.title = "Double track: instantly thicken this take with a second, slightly different copy";
+  dbl.addEventListener("click", () => {
+    const sel = track.fxSelects.dbl;
+    sel.value = track.fx.dbl.type === "off" ? "tight" : "off";
+    sel.dispatchEvent(new Event("change"));
+  });
+  track.dblChip = dbl;
+  top.append(name, mute, solo, dbl, rev, del);
 
   const volRow = el("label", "row");
   const vol = rangeInput(0, 1.5, 0.01, track.volume);
@@ -1536,7 +1577,12 @@ function renderTrack(track) {
   track.summaryEl = el("span");
   summary.append(track.summaryEl);
   const fxRow = el("div", "fx");
-  Object.keys(FX_UI).forEach((kind) => fxRow.append(renderFxBlock(FX_UI[kind], track.fx[kind], () => fxChanged(track))));
+  track.fxSelects = {};
+  Object.keys(FX_UI).forEach((kind) => {
+    const block = renderFxBlock(FX_UI[kind], track.fx[kind], () => fxChanged(track));
+    track.fxSelects[kind] = block.querySelector("select");
+    fxRow.append(block);
+  });
   const srcRow = el("div", "fx src");
   srcRow.append(
     renderTuneBlock(track),
@@ -1559,6 +1605,7 @@ function renderTrack(track) {
 
 function updateFxSummary(track) {
   if (!track.summaryEl) return;
+  track.dblChip.classList.toggle("on", track.fx.dbl.type !== "off");
   const on = Object.keys(FX_UI)
     .filter((k) => track.fx[k].type !== "off")
     .map((k) => FX_UI[k].label + ": " + FX_UI[k].types[track.fx[k].type]);
@@ -1786,7 +1833,7 @@ function fmtTime(s) {
 function tick() {
   const pos = currentPos();
 
-  if (state.playing && !state.recording && pos >= projectLength() + 0.2) {
+  if (state.playing && !state.recording && pos >= projectLength() + 0.2 && !backingActive()) {
     stop().then(() => (state.pos = 0));
   }
   let beatOn = false;
@@ -1818,6 +1865,7 @@ function tick() {
     drawRecLane();
   }
 
+  backingTick(pos);
   els.time.textContent = fmtTime(pos);
   const leftPct = Math.min(100, (pos / state.viewDur) * 100) + "%";
   tracks.forEach((t) => (t.playhead.style.left = leftPct));
@@ -1851,9 +1899,11 @@ async function importFiles(files) {
 
 async function renderMix() {
   const sr = ctx ? ctx.sampleRate : 44100;
-  const length = Math.ceil((projectLength() + TAIL_SECONDS) * sr);
+  const music = Math.max(projectLength(), backingLength(projectLength()));
+  const length = Math.ceil((music + TAIL_SECONDS) * sr);
   const off = new OfflineAudioContext(2, length, sr);
   const bus = buildMaster(off, Number(els.master.value));
+  backingRender(off, bus, music);
   const solo = anySolo();
   tracks.forEach((t) => {
     if (audibleGain(t, solo) === 0) return;
@@ -1901,7 +1951,7 @@ function encodeWav(buffer) {
 }
 
 async function exportMix() {
-  if (!tracks.length) {
+  if (!tracks.length && !backingActive()) {
     setStatus("Nothing to export yet.");
     return;
   }
@@ -1972,6 +2022,7 @@ function saveMeta() {
 
 function writeMeta() {
   const meta = {
+    ...backingMeta(),
     bpm: els.bpm.value,
     metro: els.metro.value,
     playWhileRec: els.playWhileRec.checked,
@@ -1993,6 +2044,7 @@ async function loadProject() {
   try {
     meta = JSON.parse(localStorage.getItem("hb-project"));
   } catch (e) {}
+  initBacking(meta);
   if (!meta) return;
   els.bpm.value = meta.bpm || 100;
   els.metro.value = meta.metro === true ? "sound" : meta.metro || "off";

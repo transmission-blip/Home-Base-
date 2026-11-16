@@ -245,7 +245,7 @@ select {
 
 .track-main {
   display: grid;
-  grid-template-columns: 270px minmax(0, 1fr);
+  grid-template-columns: 300px minmax(0, 1fr);
 }
 
 .track-head {
@@ -507,5 +507,172 @@ select {
   .fx,
   .fx.src {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.chip.dbl.on {
+  background: #c77dff;
+  border-color: #c77dff;
+  color: #160624;
+}
+
+/* ---------- Drums and chords ---------- */
+
+.panel.backing {
+  display: block;
+  padding: 0;
+}
+
+.panel.backing > summary {
+  padding: 12px 16px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.95rem;
+  user-select: none;
+}
+
+.backing-body {
+  padding: 4px 16px 16px;
+}
+
+.backing-body .num span,
+.backing-body .slider span {
+  margin-right: 2px;
+}
+
+.backing-body .slider input {
+  width: 100px;
+}
+
+.drum-grid {
+  display: grid;
+  grid-template-columns: 64px repeat(16, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 14px;
+  align-items: center;
+}
+
+.drum-label {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.drum-cell {
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #171b21;
+  cursor: pointer;
+}
+
+.drum-cell.alt {
+  background: #262d37;
+}
+
+.drum-cell.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.drum-cell.now {
+  box-shadow: 0 0 0 2px #fff;
+}
+
+.chord-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  align-items: stretch;
+}
+
+.chord-slot {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 6px;
+  align-items: center;
+  width: 150px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.chord-slot.now {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.chord-bar {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.chord-name {
+  grid-column: 1;
+  font-size: 1.3rem;
+}
+
+.chord-slot .chip {
+  grid-row: 1 / 3;
+  grid-column: 2;
+  width: 26px;
+  height: 26px;
+}
+
+.chord-slot select {
+  grid-column: 1 / -1;
+  width: 100%;
+  max-width: none;
+}
+
+@media (max-width: 760px) {
+  .drum-grid {
+    grid-template-columns: 44px repeat(16, minmax(0, 1fr));
+    gap: 2px;
+  }
+  .drum-label {
+    font-size: 0.62rem;
+  }
+  .drum-cell {
+    height: 38px;
+    border-radius: 4px;
+  }
+  .backing-body {
+    padding: 4px 10px 14px;
+  }
+  .chord-slot {
+    width: calc(50% - 4px);
+  }
+}
+
+/* Keep the pinned transport short on phones so it doesn't cover the page */
+@media (max-width: 760px) {
+  .transport {
+    padding: 8px 10px;
+    gap: 6px 12px;
+  }
+  .transport .tbtn {
+    width: 40px;
+    height: 40px;
+  }
+  .transport .time {
+    font-size: 1.25rem;
+    min-width: 0;
+  }
+  .transport .group {
+    gap: 6px 10px;
+  }
+  .transport input[type="number"] {
+    width: 54px;
+    padding: 4px 6px;
+  }
+  .transport select {
+    padding: 4px 6px;
+  }
+  .transport .slider input {
+    width: 90px;
   }
 }
