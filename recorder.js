@@ -101,6 +101,12 @@ function pct(v) {
   return Math.round(v * 100) + "%";
 }
 
+const SPEED_UI = {
+  label: "Speed",
+  types: { off: "Normal", tape: "Tape (pitch follows)", stretch: "Keep pitch" },
+  params: [{ key: "rate", label: "Speed", min: 0.5, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) + "×" }],
+};
+
 const GATE_UI = {
   label: "Noise gate",
   types: { off: "Off", soft: "Soft", hard: "Hard" },
@@ -915,18 +921,57 @@ function gateBuffer(buffer, gate) {
 }
 
 /* Rebuild what the track actually plays: recording -> tuning -> noise gate. */
+/* Play a buffer faster or slower. "tape" lets the pitch rise and fall with the speed, like a
+   tape machine; "stretch" keeps the pitch and only changes the length. */
+async function changeSpeed(buffer, speed) {
+  if (speed.type === "stretch") return stretch(buffer, 1 / speed.rate);
+  const length = Math.max(1, Math.round(buffer.length / speed.rate));
+  const off = new OfflineAudioContext(buffer.numberOfChannels, length, buffer.sampleRate);
+  const src = off.createBufferSource();
+  src.buffer = buffer;
+  src.playbackRate.value = speed.rate;
+  src.connect(off.destination);
+  src.start();
+  return off.startRendering();
+}
+
+/* The buffer a track actually plays (after speed, tuning and gate), or the raw recording. */
+function trackBuf(t) {
+  return t.playBuffer || t.buffer;
+}
+
+/* Rebuild what the track actually plays: recording -> speed -> tuning -> noise gate. */
 async function processSource(track) {
   const job = (track.srcJob = (track.srcJob || 0) + 1);
   const tune = track.tune;
+  const speed = track.speed;
+  const speeding = speed.type !== "off" && speed.rate !== 1;
   const tuning = tune.type !== "off" && tune.cents;
   const gating = track.gate.type !== "off";
+  const wait = () => new Promise((r) => setTimeout(r, 30)); // let the status paint before heavy work
   try {
     let buf = track.buffer;
+    if (speeding) {
+      const key = speed.type + speed.rate;
+      if (!track.sped || track.sped.key !== key) {
+        setStatus("Changing speed of " + track.name + "…");
+        await wait();
+        const sped = await changeSpeed(track.buffer, speed);
+        if (job !== track.srcJob) return;
+        track.sped = { key, buffer: sped };
+        track.tuned = null;
+        setStatus(track.name + " now plays at " + speed.rate.toFixed(2) + "× speed.");
+      }
+      buf = track.sped.buffer;
+    } else if (track.sped) {
+      track.sped = null;
+      track.tuned = null;
+    }
     if (tuning) {
       if (!track.tuned || track.tuned.cents !== tune.cents) {
         setStatus("Retuning " + track.name + "…");
-        await new Promise((r) => setTimeout(r, 30)); // let the status paint before the heavy work
-        const shifted = await pitchShift(track.buffer, tune.cents);
+        await wait();
+        const shifted = await pitchShift(buf, tune.cents);
         if (job !== track.srcJob) return;
         track.tuned = { cents: tune.cents, buffer: shifted };
         setStatus(track.name + " retuned " + centsText(tune.cents) + ".");
@@ -935,6 +980,8 @@ async function processSource(track) {
     }
     if (gating) buf = gateBuffer(buf, track.gate);
     track.playBuffer = buf === track.buffer ? null : buf;
+    drawWave(track);
+    fitView();
   } catch (e) {
     if (job === track.srcJob) setStatus("Couldn't process " + track.name + ".", true);
   }
@@ -944,7 +991,8 @@ function reverseTrack(track) {
   for (let c = 0; c < track.buffer.numberOfChannels; c++) track.buffer.getChannelData(c).reverse();
   track.reversed = !track.reversed;
   track.tuned = null;
-  drawWave(track);
+  track.sped = null;
+  if (track.revUi) track.revUi();
   saveAudio(track);
   saveMeta();
   return processSource(track);
@@ -1049,7 +1097,7 @@ function fxChanged(track) {
 }
 
 function projectLength() {
-  return tracks.reduce((m, t) => Math.max(m, t.offset + t.buffer.duration), 0);
+  return tracks.reduce((m, t) => Math.max(m, t.offset + trackBuf(t).duration), 0);
 }
 
 function currentPos() {
@@ -1067,10 +1115,10 @@ function beatLen() {
 function startSources(t0, pos) {
   tracks.forEach((t) => {
     stopSource(t);
-    const end = t.offset + t.buffer.duration;
+    const end = t.offset + trackBuf(t).duration;
     if (pos >= end) return;
     const src = ctx.createBufferSource();
-    src.buffer = t.playBuffer || t.buffer;
+    src.buffer = trackBuf(t);
     src.connect(t.nodes.fx.input);
     if (pos < t.offset) src.start(t0 + (t.offset - pos), 0);
     else src.start(t0, pos - t.offset);
@@ -1406,7 +1454,7 @@ function micErrorMessage(err) {
 
 /* ---------- Tracks ---------- */
 
-function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = false, solo = false, fx, tune, gate, reversed = false, fxOpen = false, color }, skipSave) {
+function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = false, solo = false, fx, tune, gate, speed, reversed = false, fxOpen = false, color }, skipSave) {
   const track = {
     id: id || nextId,
     name,
@@ -1419,6 +1467,7 @@ function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = 
     fx: fx || defaultFx(),
     tune: Object.assign({ type: "off", cents: 0 }, tune),
     gate: Object.assign({ type: "off", threshold: -45 }, gate),
+    speed: Object.assign({ type: "off", rate: 1 }, speed),
     reversed,
     fxOpen,
     playBuffer: null,
@@ -1516,12 +1565,8 @@ function renderTrack(track) {
     if (confirm('Delete "' + track.name + '"? This can\'t be undone.')) removeTrack(track);
   });
   const rev = el("button", "chip rev", "◀");
-  rev.title = "Reverse this track (press again to flip it back)";
-  rev.classList.toggle("on", track.reversed);
-  rev.addEventListener("click", () => {
-    reverseTrack(track);
-    rev.classList.toggle("on", track.reversed);
-  });
+  rev.title = "Play this track backwards (press again to flip it back)";
+  rev.addEventListener("click", () => reverseTrack(track));
   const dbl = el("button", "chip dbl", "×2");
   dbl.title = "Double track: instantly thicken this take with a second, slightly different copy";
   dbl.addEventListener("click", () => {
@@ -1584,7 +1629,27 @@ function renderTrack(track) {
     fxRow.append(block);
   });
   const srcRow = el("div", "fx src");
+  let speedTimer = null;
+  const speedBlock = renderFxBlock(SPEED_UI, track.speed, () => {
+    updateFxSummary(track);
+    saveMeta();
+    clearTimeout(speedTimer); // wait for the slider to settle before the heavy work
+    speedTimer = setTimeout(() => processSource(track), 250);
+  });
+  const backwards = el("input");
+  backwards.type = "checkbox";
+  backwards.addEventListener("change", () => reverseTrack(track));
+  const backwardsRow = el("label", "check fx-check");
+  backwardsRow.append(backwards, el("span", "", "Play backwards"));
+  speedBlock.append(backwardsRow);
+  track.revUi = () => {
+    rev.classList.toggle("on", track.reversed);
+    backwards.checked = track.reversed;
+    speedBlock.classList.toggle("on", track.speed.type !== "off" || track.reversed);
+    updateFxSummary(track);
+  };
   srcRow.append(
+    speedBlock,
     renderTuneBlock(track),
     renderFxBlock(GATE_UI, track.gate, () => {
       updateFxSummary(track);
@@ -1593,7 +1658,7 @@ function renderTrack(track) {
     })
   );
   panel.append(summary, fxRow, srcRow);
-  updateFxSummary(track);
+  track.revUi();
 
   root.append(main, panel);
   track.el = root;
@@ -1611,6 +1676,8 @@ function updateFxSummary(track) {
     .map((k) => FX_UI[k].label + ": " + FX_UI[k].types[track.fx[k].type]);
   if (track.tune.type !== "off") on.push("Tuning");
   if (track.gate.type !== "off") on.push("Noise gate");
+  if (track.speed.type !== "off" && track.speed.rate !== 1) on.push("Speed " + track.speed.rate.toFixed(2) + "×");
+  if (track.reversed) on.push("Backwards");
   track.summaryEl.textContent = "Effects — " + (on.length ? on.join(", ") : "none on");
 }
 
@@ -1702,7 +1769,7 @@ function renderTuneBlock(track) {
     if (tune.type === "auto") {
       note.textContent = "Listening…";
       await new Promise((r) => setTimeout(r, 30));
-      const found = detectTuning(track.buffer);
+      const found = detectTuning(track.sped ? track.sped.buffer : track.buffer);
       if (!found || found.confidence < 0.2) {
         tune.cents = 0;
         note.textContent = "Couldn't hear a steady pitch to tune to. Try Manual.";
@@ -1768,8 +1835,8 @@ function drawWave(track) {
   const W = canvas.width;
   const H = canvas.height;
   g.clearRect(0, 0, W, H);
-  const data = track.buffer.getChannelData(0);
-  const sr = track.buffer.sampleRate;
+  const data = trackBuf(track).getChannelData(0);
+  const sr = trackBuf(track).sampleRate;
   const x0 = (track.offset / state.viewDur) * W;
   const perPx = (state.viewDur * sr) / W;
   const stride = Math.max(1, Math.floor(perPx / 48));
@@ -1909,7 +1976,7 @@ async function renderMix() {
     if (audibleGain(t, solo) === 0) return;
     const strip = buildStrip(off, t, bus, solo);
     const src = off.createBufferSource();
-    src.buffer = t.playBuffer || t.buffer;
+    src.buffer = trackBuf(t);
     src.connect(strip.fx.input);
     src.start(t.offset);
   });
@@ -2028,8 +2095,8 @@ function writeMeta() {
     playWhileRec: els.playWhileRec.checked,
     countIn: els.countIn.checked,
     master: els.master.value,
-    tracks: tracks.map(({ id, name, offset, volume, pan, mute, solo, fx, tune, gate, reversed, fxOpen, color }) => ({
-      id, name, offset, volume, pan, mute, solo, fx, tune, gate, reversed, fxOpen, color,
+    tracks: tracks.map(({ id, name, offset, volume, pan, mute, solo, fx, tune, gate, speed, reversed, fxOpen, color }) => ({
+      id, name, offset, volume, pan, mute, solo, fx, tune, gate, speed, reversed, fxOpen, color,
     })),
   };
   try {
