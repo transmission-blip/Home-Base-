@@ -17,7 +17,12 @@
     els[id] = document.getElementById(id);
   }
 
-  const state = { title: "", tuning: "standard", detect: "full", mode: "auto", bpm: 100, cols: [] };
+  // cols[c][s] is the fret on string s (0 = lowest) at column c, or null. tech[c][s] is that note's
+  // technique mark: "h", "p", "/", "\\" (how it is reached from the note before it on the string)
+  // or "b1".."b3" (bent up that many semitones).
+  const state = { title: "", tuning: "standard", detect: "full", mode: "auto", bpm: 100, cols: [], tech: [] };
+  const MARKS = ["h", "p", "/", "\\", "b1", "b2", "b3"];
+  const BEND_LABEL = { b1: "½", b2: "1", b3: "1½" };
   let sel = { col: 0, string: 5 }; // string 0 = lowest
   let cellEls = []; // cellEls[col][string]
   let undoStack = [];
@@ -38,11 +43,26 @@
     const bars = Math.max(MIN_BARS, Math.ceil((last + 1) / STEPS) + 1);
     state.cols.length = Math.min(state.cols.length, bars * STEPS);
     while (state.cols.length < bars * STEPS) state.cols.push(Core.emptyColumn());
+    // The technique grid shadows the fret grid: same size, and no mark without a note.
+    state.tech.length = Math.min(state.tech.length, state.cols.length);
+    while (state.tech.length < state.cols.length) state.tech.push(Core.emptyColumn());
+    state.cols.forEach((col, c) => {
+      col.forEach((v, i) => {
+        if (v === null) state.tech[c][i] = null;
+      });
+    });
     sel.col = Math.max(0, Math.min(sel.col, state.cols.length - 1));
   }
 
   function snapshot() {
-    return JSON.stringify(state.cols.slice(0, Core.lastUsedColumn(state.cols) + 1));
+    const used = Core.lastUsedColumn(state.cols) + 1;
+    return JSON.stringify({ cols: state.cols.slice(0, used), tech: state.tech.slice(0, used) });
+  }
+
+  function restore(text) {
+    const saved = JSON.parse(text);
+    state.cols = saved.cols;
+    state.tech = saved.tech;
   }
 
   function pushUndo() {
@@ -52,7 +72,7 @@
 
   function undo() {
     if (!undoStack.length || locked()) return;
-    state.cols = JSON.parse(undoStack.pop());
+    restore(undoStack.pop());
     newRange = null;
     commit();
   }
@@ -67,7 +87,8 @@
           detect: state.detect,
           mode: state.mode,
           bpm: state.bpm,
-          cols: JSON.parse(snapshot()),
+          cols: JSON.parse(snapshot()).cols,
+          tech: JSON.parse(snapshot()).tech,
         })
       );
     } catch (e) {
@@ -88,6 +109,12 @@
         state.cols = saved.cols
           .filter((c) => Array.isArray(c) && c.length === 6)
           .map((c) => c.map((v) => (Number.isInteger(v) && v >= 0 && v <= 24 ? v : null)));
+      }
+      if (Array.isArray(saved.tech)) {
+        state.tech = state.cols.map((_, c) => {
+          const col = Array.isArray(saved.tech[c]) ? saved.tech[c] : [];
+          return Core.emptyColumn().map((_, i) => (MARKS.includes(col[i]) ? col[i] : null));
+        });
       }
     } catch (e) {
       /* ignore a corrupt save */
@@ -158,6 +185,15 @@
               const span = document.createElement("span");
               span.textContent = v;
               cell.appendChild(span);
+              const mark = state.tech[c][s];
+              if (mark) {
+                const tag = document.createElement("i");
+                const bend = mark[0] === "b";
+                tag.className = bend ? "tech bend" : "tech";
+                tag.textContent = bend ? "↑" + BEND_LABEL[mark] : mark;
+                cell.appendChild(tag);
+                cell.title = TECH_NAME[mark];
+              }
             }
             barEl.appendChild(cell);
             cellEls[c][s] = cell;
@@ -170,6 +206,16 @@
     els.tab.replaceChildren(frag);
     els.undoBtn.disabled = !undoStack.length;
   }
+
+  const TECH_NAME = {
+    h: "Hammer-on from the note before",
+    p: "Pull-off from the note before",
+    "/": "Slide up from the note before",
+    "\\": "Slide down from the note before",
+    b1: "Bend up a half step",
+    b2: "Bend up a whole step",
+    b3: "Bend up a step and a half",
+  };
 
   function select(col, string, scroll) {
     const old = cellEls[sel.col] && cellEls[sel.col][sel.string];
@@ -193,6 +239,24 @@
     lastDigit = keep;
   }
 
+  /* Put a technique mark on the selected note; the same key again takes it off. "b" steps
+     through whole-step, half-step and step-and-a-half bends. */
+  function toggleTech(key) {
+    if (locked()) return;
+    if (state.cols[sel.col][sel.string] === null) {
+      setStatus("Put a fret number here first, then mark how it's played.");
+      return;
+    }
+    const cur = state.tech[sel.col][sel.string];
+    let next;
+    if (key === "b") next = { b2: "b1", b1: "b3", b3: null }[cur] || (cur === null || cur[0] !== "b" ? "b2" : null);
+    else next = cur === key ? null : key;
+    pushUndo();
+    state.tech[sel.col][sel.string] = next;
+    commit();
+    setStatus(next ? TECH_NAME[next] + "." : "Mark removed.");
+  }
+
   function typeDigit(d) {
     const now = Date.now();
     const cur = state.cols[sel.col][sel.string];
@@ -213,6 +277,7 @@
     if (locked()) return;
     pushUndo();
     state.cols.splice(sel.col, 0, Core.emptyColumn());
+    state.tech.splice(sel.col, 0, Core.emptyColumn());
     newRange = null;
     commit();
   }
@@ -221,6 +286,7 @@
     if (locked()) return;
     pushUndo();
     state.cols.splice(sel.col, 1);
+    state.tech.splice(sel.col, 1);
     newRange = null;
     commit();
   }
@@ -256,6 +322,9 @@
     } else if (e.key === "ArrowDown") {
       e.preventDefault();
       select(sel.col, sel.string - 1, true);
+    } else if (["h", "p", "/", "\\", "b"].includes(e.key.toLowerCase())) {
+      e.preventDefault();
+      toggleTech(e.key.toLowerCase());
     } else if (e.key === "Backspace" || e.key === "Delete") {
       e.preventDefault();
       setCell(null);
@@ -277,6 +346,11 @@
     for (let d = 0; d <= 9; d++) add(String(d), "Fret " + d, () => typeDigit(d));
     add("⌫", "Clear this note", () => setCell(null));
     add("→", "Move right", () => select(sel.col + 1, sel.string, true));
+    add("h", "Hammer-on", () => toggleTech("h"));
+    add("p", "Pull-off", () => toggleTech("p"));
+    add("/", "Slide up", () => toggleTech("/"));
+    add("\\", "Slide down", () => toggleTech("\\"));
+    add("bend", "Bend: press again for half step, then a step and a half", () => toggleTech("b"));
   }
 
   /* ---------- Turning heard notes into tab ---------- */
@@ -288,6 +362,7 @@
     const last = Core.lastUsedColumn(state.cols);
     take = {
       base: state.cols.slice(0, last + 1),
+      baseTech: state.tech.slice(0, last + 1),
       startCol: last < 0 ? 0 : Math.ceil((last + 1) / STEPS) * STEPS,
       empty: last < 0,
     };
@@ -297,8 +372,11 @@
   function writeTake(notes) {
     const made = Core.notesToColumns(notes, tuningMidi(), state.mode, state.bpm);
     const cols = take.base.map((c) => c.slice());
+    const tech = take.baseTech.map((c) => c.slice());
     while (cols.length < take.startCol) cols.push(Core.emptyColumn());
+    while (tech.length < take.startCol) tech.push(Core.emptyColumn());
     state.cols = cols.concat(made.cols);
+    state.tech = tech.concat(made.tech);
     newRange = made.cols.length ? [take.startCol, take.startCol + made.cols.length - 1] : null;
     take.bpm = made.bpm;
     take.count = made.count;
@@ -416,6 +494,7 @@
 
     const buf = new Float32Array(analyser.fftSize);
     const tracker = Core.createTracker();
+    const frames = []; // kept so hammer-ons, slides and bends can be told apart afterwards
     const began = ctx.currentTime;
     let shown = -1;
 
@@ -424,6 +503,7 @@
       analyser.getFloatTimeDomainData(buf);
       const r = Core.detectPitch(buf, ctx.sampleRate);
       tracker.push(ctx.currentTime, r.freq, r.rms, r.loose);
+      frames.push(Core.frameOf(ctx.currentTime, r));
       els.meter.style.width = Math.min(100, Math.sqrt(r.rms) * 220) + "%";
       showHeard(tracker.current());
       if (full) {
@@ -438,13 +518,13 @@
       const notes = tracker.snapshot();
       if (notes.length !== shown) {
         shown = notes.length;
-        writeTake(notes);
+        writeTake(Core.markTechniques(notes, frames));
         const lastCol = newRange ? cellEls[newRange[1]] : null;
         if (lastCol) lastCol[0].scrollIntoView({ block: "nearest" });
       }
     }, 20);
 
-    listening = { ctx, stream, timer, tracker, chunks };
+    listening = { ctx, stream, timer, tracker, chunks, frames };
     els.listenBtn.textContent = full ? "■ Stop and write the tab" : "■ Stop listening";
     els.listenBtn.classList.add("active");
     els.fileBtn.disabled = true;
@@ -459,7 +539,7 @@
 
   async function stopListening() {
     if (!listening) return;
-    const { ctx, stream, timer, tracker, chunks } = listening;
+    const { ctx, stream, timer, tracker, chunks, frames } = listening;
     clearInterval(timer);
     stream.getTracks().forEach((t) => t.stop());
     const sampleRate = ctx.sampleRate;
@@ -471,7 +551,7 @@
     els.meter.style.width = "0";
     showHeard(null);
 
-    let notes = tracker.snapshot();
+    let notes = Core.markTechniques(tracker.snapshot(), frames);
     let source = "the microphone";
     if (chunks && chunks.length) {
       const samples = new Float32Array(chunks.length * chunks[0].length);
@@ -493,9 +573,11 @@
     els.fileBtn.disabled = true;
     setStatus(`Working out ${what}… (the first time, this downloads a 2 MB model)`);
     try {
-      return await window.TabPoly.transcribe(samples, sampleRate, (p) =>
+      const notes = await window.TabPoly.transcribe(samples, sampleRate, (p) =>
         setStatus(`Working out ${what}… ${Math.round(p * 100)}%`)
       );
+      // The model says which notes; a second look at the sound says how each was played.
+      return Core.markTechniques(notes, await Core.pitchFrames(samples, sampleRate));
     } catch (e) {
       console.warn("Chord model failed", e);
       return null;
@@ -560,22 +642,36 @@
 
   let playback = null; // { ctx, raf }
 
-  function pluck(ctx, midi, when) {
+  /* One note. `how` shapes it: hammered, pulled and slid notes have no pick attack, a slide
+     glides in from `fromMidi`, and a bend pushes the pitch up after the note starts. Returns the
+     note's volume control so the next note on the same string can cut it off. */
+  function pluck(ctx, midi, when, how, fromMidi) {
     const osc = ctx.createOscillator();
     const filter = ctx.createBiquadFilter();
     const gain = ctx.createGain();
     const freq = Core.midiFreq(midi);
+    const legato = how === "h" || how === "p" || how === "/" || how === "\\";
     osc.type = "sawtooth";
-    osc.frequency.value = freq;
+    if ((how === "/" || how === "\\") && fromMidi !== undefined) {
+      osc.frequency.setValueAtTime(Core.midiFreq(fromMidi), when);
+      osc.frequency.exponentialRampToValueAtTime(freq, when + 0.09);
+    } else if (how && how[0] === "b") {
+      osc.frequency.setValueAtTime(freq, when);
+      osc.frequency.setValueAtTime(freq, when + 0.07);
+      osc.frequency.exponentialRampToValueAtTime(Core.midiFreq(midi + Number(how[1])), when + 0.3);
+    } else {
+      osc.frequency.value = freq;
+    }
     filter.type = "lowpass";
-    filter.frequency.setValueAtTime(Math.min(9000, freq * 9), when);
+    filter.frequency.setValueAtTime(Math.min(9000, freq * (legato ? 4 : 9)), when);
     filter.frequency.exponentialRampToValueAtTime(Math.max(300, freq * 1.5), when + 0.5);
     gain.gain.setValueAtTime(0.0001, when);
-    gain.gain.exponentialRampToValueAtTime(0.22, when + 0.004);
+    gain.gain.exponentialRampToValueAtTime(legato ? 0.13 : 0.22, when + (legato ? 0.012 : 0.004));
     gain.gain.exponentialRampToValueAtTime(0.0001, when + 1.3);
     osc.connect(filter).connect(gain).connect(ctx.destination);
     osc.start(when);
     osc.stop(when + 1.35);
+    return gain;
   }
 
   function togglePlay() {
@@ -596,9 +692,19 @@
     const step = 60 / state.bpm / 4;
     const t0 = ctx.currentTime + 0.12;
     const tuning = tuningMidi();
+    const ringing = []; // per string: the note still sounding and its pitch
     for (let c = from; c <= last; c++) {
       state.cols[c].forEach((fret, s) => {
-        if (fret !== null) pluck(ctx, tuning[s] + fret, t0 + (c - from) * step);
+        if (fret === null) return;
+        const when = t0 + (c - from) * step;
+        const before = ringing[s];
+        if (before) {
+          // A string sounds one note at a time.
+          before.gain.gain.cancelScheduledValues(when);
+          before.gain.gain.setTargetAtTime(0.0001, when, 0.008);
+        }
+        const midi = tuning[s] + fret;
+        ringing[s] = { gain: pluck(ctx, midi, when, state.tech[c][s], before ? before.midi : undefined), midi };
       });
     }
     let lit = -1;
@@ -639,7 +745,7 @@
 
   function asText() {
     const header = [state.title || "Untitled", `Tuning: ${Core.TUNINGS[state.tuning].label}   Tempo: ${state.bpm} BPM`].join("\n");
-    return Core.toAscii(state.cols, tuningMidi(), header);
+    return Core.toAscii(state.cols, tuningMidi(), header, 2, state.tech);
   }
 
   els.copyBtn.addEventListener("click", async () => {
@@ -671,6 +777,7 @@
     stopPlayback();
     pushUndo();
     state.cols = [];
+    state.tech = [];
     newRange = null;
     sel = { col: 0, string: 5 };
     commit();

@@ -252,6 +252,7 @@ nav {
 }
 
 .cell {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -268,6 +269,26 @@ nav {
   background: var(--panel);
   padding: 0 1px;
   letter-spacing: -0.06em;
+}
+
+/* Technique marks ride above the string line so they never cover a fret number: h, p and
+   slides just before the note they lead into, a bend just after its note. */
+.tech {
+  position: absolute;
+  left: -5px;
+  top: -3px;
+  font: 700 0.7rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--accent);
+  line-height: 1;
+  pointer-events: none;
+}
+
+.tech.bend {
+  left: auto;
+  right: -13px;
+  top: -3px;
+  white-space: nowrap;
+  z-index: 1;
 }
 
 .cell:hover {
