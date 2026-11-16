@@ -11,18 +11,22 @@
   const els = {};
   for (const id of [
     "listenBtn", "fileBtn", "fileInput", "heardNote", "heardPos", "meter", "status", "title",
-    "tuning", "mode", "bpm", "playBtn", "undoBtn", "insertBtn", "deleteBtn", "copyBtn",
+    "tuning", "detect", "mode", "bpm", "playBtn", "undoBtn", "insertBtn", "deleteBtn", "copyBtn",
     "downloadBtn", "clearBtn", "tab", "pad",
   ]) {
     els[id] = document.getElementById(id);
   }
 
-  const state = { title: "", tuning: "standard", mode: "auto", bpm: 100, cols: [] };
+  const state = { title: "", tuning: "standard", detect: "full", mode: "auto", bpm: 100, cols: [] };
   let sel = { col: 0, string: 5 }; // string 0 = lowest
   let cellEls = []; // cellEls[col][string]
   let undoStack = [];
   let newRange = null; // columns written by the latest take, shown highlighted
   let lastDigit = null;
+  let busy = false; // a recording is being worked out
+
+  /* No editing while a take is being heard or worked out: the tab is about to be rewritten. */
+  const locked = () => Boolean(listening) || busy;
 
   const tuningMidi = () => Core.TUNINGS[state.tuning].midi;
 
@@ -47,7 +51,7 @@
   }
 
   function undo() {
-    if (!undoStack.length || listening) return;
+    if (!undoStack.length || locked()) return;
     state.cols = JSON.parse(undoStack.pop());
     newRange = null;
     commit();
@@ -57,7 +61,14 @@
     try {
       localStorage.setItem(
         STORE_KEY,
-        JSON.stringify({ title: state.title, tuning: state.tuning, mode: state.mode, bpm: state.bpm, cols: JSON.parse(snapshot()) })
+        JSON.stringify({
+          title: state.title,
+          tuning: state.tuning,
+          detect: state.detect,
+          mode: state.mode,
+          bpm: state.bpm,
+          cols: JSON.parse(snapshot()),
+        })
       );
     } catch (e) {
       /* storage full or unavailable: the tab still works for this visit */
@@ -70,6 +81,7 @@
       if (!saved) return;
       if (Core.TUNINGS[saved.tuning]) state.tuning = saved.tuning;
       if (["auto", "bpm", "even"].includes(saved.mode)) state.mode = saved.mode;
+      if (["full", "quick"].includes(saved.detect)) state.detect = saved.detect;
       if (saved.bpm >= 40 && saved.bpm <= 240) state.bpm = saved.bpm;
       state.title = typeof saved.title === "string" ? saved.title : "";
       if (Array.isArray(saved.cols)) {
@@ -98,6 +110,8 @@
     const perRow = Math.max(1, Math.floor(room / barW));
     const bars = state.cols.length / STEPS;
     const labels = tuningMidi().map(Core.pitchClass);
+    const shifts = {};
+    for (const m of Core.handPositions(state.cols)) shifts[m.col] = m.fret;
 
     const frag = document.createDocumentFragment();
     cellEls = [];
@@ -122,6 +136,14 @@
         for (let k = 0; k < STEPS; k++) {
           const c = bar * STEPS + k;
           cellEls[c] = [];
+          if (shifts[c] !== undefined) {
+            const mark = document.createElement("span");
+            mark.className = "pos-mark";
+            mark.style.left = k * cellW + "px";
+            mark.textContent = Core.roman(shifts[c]);
+            mark.title = "Hand moves to fret " + shifts[c];
+            barEl.appendChild(mark);
+          }
           for (let s = 5; s >= 0; s--) {
             const cell = document.createElement("div");
             let cls = "cell";
@@ -162,7 +184,7 @@
   /* ---------- Editing ---------- */
 
   function setCell(value) {
-    if (listening) return;
+    if (locked()) return;
     if (state.cols[sel.col][sel.string] === value) return;
     pushUndo();
     state.cols[sel.col][sel.string] = value;
@@ -188,7 +210,7 @@
   }
 
   function insertColumn() {
-    if (listening) return;
+    if (locked()) return;
     pushUndo();
     state.cols.splice(sel.col, 0, Core.emptyColumn());
     newRange = null;
@@ -196,7 +218,7 @@
   }
 
   function deleteColumn() {
-    if (listening) return;
+    if (locked()) return;
     pushUndo();
     state.cols.splice(sel.col, 1);
     newRange = null;
@@ -325,7 +347,28 @@
 
   /* ---------- Listening through the microphone ---------- */
 
-  let listening = null; // { ctx, stream, timer, tracker }
+  let listening = null; // { ctx, stream, timer, tracker, chunks }
+
+  // Collects the raw audio of a take so the chord model can go over it afterwards.
+  const TAP_SOURCE = `
+    class Tap extends AudioWorkletProcessor {
+      constructor() { super(); this.buf = new Float32Array(4096); this.n = 0; }
+      process(inputs) {
+        const ch = inputs[0][0];
+        if (ch) {
+          for (let i = 0; i < ch.length; i++) {
+            this.buf[this.n++] = ch[i];
+            if (this.n === this.buf.length) { this.port.postMessage(this.buf.slice()); this.n = 0; }
+          }
+        }
+        return true;
+      }
+    }
+    registerProcessor("tab-tap", Tap);`;
+
+  function clock(seconds) {
+    return Math.floor(seconds / 60) + ":" + String(Math.floor(seconds % 60)).padStart(2, "0");
+  }
 
   async function startListening() {
     stopPlayback();
@@ -345,12 +388,35 @@
     }
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     await ctx.resume();
+    const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0;
-    ctx.createMediaStreamSource(stream).connect(analyser);
+    source.connect(analyser);
+
+    // Full detection works on the whole recording once you stop, so keep the audio.
+    let chunks = null;
+    if (state.detect === "full" && ctx.audioWorklet) {
+      try {
+        const url = URL.createObjectURL(new Blob([TAP_SOURCE], { type: "application/javascript" }));
+        await ctx.audioWorklet.addModule(url);
+        URL.revokeObjectURL(url);
+        const tap = new AudioWorkletNode(ctx, "tab-tap");
+        const mute = ctx.createGain();
+        mute.gain.value = 0;
+        source.connect(tap).connect(mute).connect(ctx.destination);
+        chunks = [];
+        tap.port.onmessage = (e) => chunks && chunks.push(e.data);
+        if (window.TabPoly) window.TabPoly.preload().catch(() => {});
+      } catch (e) {
+        chunks = null;
+      }
+    }
+    const full = chunks !== null;
+
     const buf = new Float32Array(analyser.fftSize);
     const tracker = Core.createTracker();
+    const began = ctx.currentTime;
     let shown = -1;
 
     beginTake();
@@ -360,6 +426,15 @@
       tracker.push(ctx.currentTime, r.freq, r.rms, r.loose);
       els.meter.style.width = Math.min(100, Math.sqrt(r.rms) * 220) + "%";
       showHeard(tracker.current());
+      if (full) {
+        // The tab is written when you stop; show that the take is running.
+        const secs = Math.floor(ctx.currentTime - began);
+        if (secs !== shown) {
+          shown = secs;
+          setStatus(`Recording… ${clock(secs)}. Play normally, chords and all, then press Stop and the tab is written.`);
+        }
+        return;
+      }
       const notes = tracker.snapshot();
       if (notes.length !== shown) {
         shown = notes.length;
@@ -369,27 +444,65 @@
       }
     }, 20);
 
-    listening = { ctx, stream, timer, tracker };
-    els.listenBtn.textContent = "■ Stop listening";
+    listening = { ctx, stream, timer, tracker, chunks };
+    els.listenBtn.textContent = full ? "■ Stop and write the tab" : "■ Stop listening";
     els.listenBtn.classList.add("active");
     els.fileBtn.disabled = true;
-    setStatus("Listening… play one note at a time, and let each one sound clearly.");
+    if (!full) {
+      setStatus(
+        state.detect === "full"
+          ? "Listening for single notes only: this browser can't record a take for chord detection."
+          : "Listening… play one note at a time, and let each one sound clearly."
+      );
+    }
   }
 
-  function stopListening() {
+  async function stopListening() {
     if (!listening) return;
-    const { ctx, stream, timer, tracker } = listening;
+    const { ctx, stream, timer, tracker, chunks } = listening;
     clearInterval(timer);
     stream.getTracks().forEach((t) => t.stop());
+    const sampleRate = ctx.sampleRate;
     ctx.close();
     listening = null;
     tracker.flush();
     els.listenBtn.textContent = "● Listen and transcribe";
     els.listenBtn.classList.remove("active");
-    els.fileBtn.disabled = false;
     els.meter.style.width = "0";
     showHeard(null);
-    endTake(tracker.snapshot(), "the microphone");
+
+    let notes = tracker.snapshot();
+    let source = "the microphone";
+    if (chunks && chunks.length) {
+      const samples = new Float32Array(chunks.length * chunks[0].length);
+      chunks.forEach((c, i) => samples.set(c, i * c.length));
+      const better = await runChordModel(samples, sampleRate, "your take");
+      if (better) notes = better;
+      else source = "the microphone (single notes only: the chord model couldn't be loaded)";
+    }
+    els.fileBtn.disabled = false;
+    endTake(notes, source);
+  }
+
+  /* Run the chord-capable model over a recording. Resolves to its notes, or null if the model
+     can't be used (offline on first use, or a browser without the needed features). */
+  async function runChordModel(samples, sampleRate, what) {
+    if (!window.TabPoly) return null;
+    busy = true;
+    els.listenBtn.disabled = true;
+    els.fileBtn.disabled = true;
+    setStatus(`Working out ${what}… (the first time, this downloads a 2 MB model)`);
+    try {
+      return await window.TabPoly.transcribe(samples, sampleRate, (p) =>
+        setStatus(`Working out ${what}… ${Math.round(p * 100)}%`)
+      );
+    } catch (e) {
+      console.warn("Chord model failed", e);
+      return null;
+    } finally {
+      busy = false;
+      els.listenBtn.disabled = false;
+    }
   }
 
   els.listenBtn.addEventListener("click", () => (listening ? stopListening() : startListening()));
@@ -401,7 +514,7 @@
   els.fileInput.addEventListener("change", async () => {
     const file = els.fileInput.files[0];
     els.fileInput.value = "";
-    if (!file || listening) return;
+    if (!file || locked()) return;
     stopPlayback();
     els.listenBtn.disabled = true;
     els.fileBtn.disabled = true;
@@ -419,14 +532,25 @@
         const data = audio.getChannelData(ch);
         for (let i = 0; i < data.length; i++) mono[i] += data[i] / audio.numberOfChannels;
       }
-      const notes = await Core.analyzeSamples(mono, audio.sampleRate, (p) =>
-        setStatus(`Listening to ${file.name}… ${Math.round(p * 100)}%`)
-      );
+      let notes = null;
+      let source = file.name;
+      if (state.detect === "full") {
+        notes = await runChordModel(mono, audio.sampleRate, file.name);
+        if (!notes) source += " (single notes only: the chord model couldn't be loaded)";
+      }
+      if (!notes) {
+        busy = true;
+        notes = await Core.analyzeSamples(mono, audio.sampleRate, (p) =>
+          setStatus(`Listening to ${file.name}… ${Math.round(p * 100)}%`)
+        );
+        busy = false;
+      }
       beginTake();
-      endTake(notes, file.name);
+      endTake(notes, source);
     } catch (e) {
       setStatus(`Couldn't read ${file.name} as audio. Try a WAV, MP3 or M4A file.`);
     } finally {
+      busy = false;
       els.listenBtn.disabled = false;
       els.fileBtn.disabled = false;
     }
@@ -460,7 +584,7 @@
   }
 
   function startPlayback() {
-    if (listening) return;
+    if (locked()) return;
     const last = Core.lastUsedColumn(state.cols);
     if (last < 0) {
       setStatus("Nothing to play yet.");
@@ -543,7 +667,7 @@
   els.deleteBtn.addEventListener("click", deleteColumn);
 
   els.clearBtn.addEventListener("click", () => {
-    if (listening || Core.lastUsedColumn(state.cols) < 0) return;
+    if (locked() || Core.lastUsedColumn(state.cols) < 0) return;
     stopPlayback();
     pushUndo();
     state.cols = [];
@@ -561,6 +685,11 @@
   els.tuning.addEventListener("change", () => {
     state.tuning = els.tuning.value;
     commit();
+  });
+
+  els.detect.addEventListener("change", () => {
+    state.detect = els.detect.value;
+    save();
   });
 
   els.mode.addEventListener("change", () => {
@@ -592,6 +721,7 @@
   load();
   els.title.value = state.title;
   els.tuning.value = state.tuning;
+  els.detect.value = state.detect;
   els.mode.value = state.mode;
   els.bpm.value = state.bpm;
   buildPad();

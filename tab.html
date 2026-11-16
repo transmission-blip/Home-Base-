@@ -25,7 +25,7 @@
         <div class="heard-pos" id="heardPos">&nbsp;</div>
       </div>
       <div class="meter" title="Input level"><div class="meter-fill" id="meter"></div></div>
-      <p class="status" id="status">Play one note at a time and the tab writes itself. New takes are added after what's already there.</p>
+      <p class="status" id="status">Play a take, press Stop, and it's written out as tab. New takes are added after what's already there.</p>
     </section>
 
     <section class="panel settings">
@@ -34,6 +34,12 @@
       </label>
       <label class="field">Tuning
         <select id="tuning"></select>
+      </label>
+      <label class="field" title="Chords and fingerpicking: records your take and works it out when you stop. Single notes: writes the tab live as you play, one note at a time.">Hears
+        <select id="detect">
+          <option value="full">Chords and fingerpicking</option>
+          <option value="quick">Single notes, live</option>
+        </select>
       </label>
       <label class="field" title="How note timing becomes spacing on the tab.">Rhythm
         <select id="mode">
@@ -64,12 +70,16 @@
 
     <p class="hint">
       Tap any spot on a string and type a fret (two digits quickly for 10 and up). Arrow keys move,
-      Backspace clears. Each column is a sixteenth note. Listening hears one note at a time: for
-      chords, or notes left ringing over each other, type them in by hand.
+      Backspace clears. Each column is a sixteenth note. Roman numerals above the tab mark where
+      the fretting hand shifts: <strong>V</strong> means first finger at the 5th fret. The same note
+      can be played in several places on the neck, so strings and positions are a best guess at the
+      easiest fingering, not something the microphone can hear. Chord detection uses
+      <a href="https://github.com/spotify/basic-pitch">Basic Pitch</a> and runs entirely in your browser.
     </p>
   </div>
 
   <script src="tab-core.js"></script>
+  <script src="tab-poly.js"></script>
   <script src="tab.js"></script>
 </body>
 </html>

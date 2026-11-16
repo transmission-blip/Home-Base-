@@ -317,85 +317,334 @@
     return { steps, bpm: Math.round(guess) };
   }
 
-  /* ---------- Fretboard placement ---------- */
+  /* ---------- Tidying the chord model's output ---------- */
 
-  function positionsFor(midi, tuning) {
+  const OVERTONES = [12, 19, 24, 28, 31];
+
+  /* The chord-capable model (see tab-poly.js) hears everything that is sounding, which includes
+     things nobody played: strings that are still ringing get reported again each time another
+     note is picked, and the overtones of a strong note show up as faint notes of their own.
+     Each note carries { midi, start, end, amp, onset } where `onset` is how sure the model was
+     that the note began there. */
+  function cleanPolyNotes(raw) {
+    const notes = raw
+      .filter((n) => n.onset >= 0.5)
+      .map((n) => Object.assign({}, n))
+      .sort((a, b) => a.start - b.start || a.midi - b.midi);
+
+    // 1. One pitch reported twice in a row: either one pick stroke split in two, or a string that
+    //    is still ringing being "re-heard" when something else is picked. Fold the repeat into the
+    //    first note unless it looks like a real new attack. In a strum (three or more new notes
+    //    at once) strings shared with the previous chord really are struck again, so believe
+    //    repeats more readily there.
+    const lastOf = {};
+    const merged = [];
+    for (const ev of clusterByStart(notes)) {
+      const kind = ev.map((n) => {
+        const prev = lastOf[n.midi];
+        if (!prev) return "new";
+        if (n.start - prev.start < 0.1) return "split";
+        if (prev.end >= n.start - 0.06 && n.onset < 0.75) return "ringing";
+        return "new";
+      });
+      const strum = ev.filter((n, i) => kind[i] === "new" && n.onset >= 0.7).length >= 3;
+      ev.forEach((n, i) => {
+        const prev = lastOf[n.midi];
+        if (kind[i] === "split") {
+          prev.end = Math.max(prev.end, n.end);
+          prev.amp = Math.max(prev.amp, n.amp);
+          prev.onset = Math.max(prev.onset, n.onset);
+        } else if (kind[i] === "ringing" && !(strum && n.onset >= 0.6)) {
+          prev.end = Math.max(prev.end, n.end);
+        } else {
+          merged.push(n);
+          lastOf[n.midi] = n;
+        }
+      });
+    }
+
+    // 2. Faint notes nobody played. Next to one or two firmly picked notes, anything much quieter
+    //    is an overtone or an echo of the room. A full chord is different: its upper notes really
+    //    are quieter, and the same pitches really are doubled an octave up, so be forgiving there.
     const out = [];
-    for (let s = 0; s < tuning.length; s++) {
-      const fret = midi - tuning[s];
-      if (fret >= 0 && fret <= MAX_FRET) out.push({ string: s, fret });
+    for (const ev of clusterByStart(merged)) {
+      const loudest = Math.max(...ev.map((n) => n.amp));
+      const chord = ev.filter((n) => n.amp >= loudest * 0.6).length >= 3;
+      for (const n of ev) {
+        if (n.amp < loudest * (chord ? 0.3 : 0.6)) continue;
+        const overtone = ev.some(
+          (low) => low !== n && OVERTONES.includes(n.midi - low.midi) && n.amp < low.amp * (chord ? 0.45 : 0.75)
+        );
+        if (!overtone) out.push(n);
+      }
     }
     return out;
   }
 
-  /* Pick a string and fret for each pitch so the hand moves as little as possible
-     (shortest path through the candidate positions). Unplayable pitches come back null. */
-  function assignFrets(midis, tuning) {
-    const result = midis.map(() => null);
-    const layers = [];
-    midis.forEach((m, i) => {
-      const options = positionsFor(m, tuning);
-      if (options.length) layers.push({ i, options });
-    });
-    if (!layers.length) return result;
-
-    const nodeCost = (p) => p.fret * 0.12 + (p.fret > 12 ? (p.fret - 12) * 0.3 : 0);
-    const moveCost = (a, b) => {
-      const strings = Math.abs(a.string - b.string) * 0.35;
-      if (a.fret === 0 || b.fret === 0) return strings + 0.4;
-      return strings + Math.abs(a.fret - b.fret);
-    };
-
-    let costs = layers[0].options.map(nodeCost);
-    const back = [];
-    for (let k = 1; k < layers.length; k++) {
-      const prev = layers[k - 1].options;
-      const here = layers[k].options;
-      const next = [];
-      const from = [];
-      for (let j = 0; j < here.length; j++) {
-        let best = Infinity;
-        let arg = 0;
-        for (let p = 0; p < prev.length; p++) {
-          const c = costs[p] + moveCost(prev[p], here[j]);
-          if (c < best) {
-            best = c;
-            arg = p;
-          }
-        }
-        next.push(best + nodeCost(here[j]));
-        from.push(arg);
-      }
-      back.push(from);
-      costs = next;
+  function clusterByStart(notes) {
+    const groups = [];
+    let last = -Infinity;
+    for (const n of notes) {
+      const g = groups[groups.length - 1];
+      if (g && n.start - last < 0.045 && n.start - g[0].start < 0.09) g.push(n);
+      else groups.push([n]);
+      last = n.start;
     }
-    let j = costs.indexOf(Math.min(...costs));
-    for (let k = layers.length - 1; k >= 0; k--) {
-      result[layers[k].i] = layers[k].options[j];
-      if (k > 0) j = back[k - 1][j];
+    return groups;
+  }
+
+  /* ---------- Events: notes that start together (a chord, a pinch, a strum) ---------- */
+
+  function groupEvents(notes) {
+    const sorted = notes.slice().sort((a, b) => a.start - b.start || a.midi - b.midi);
+    const events = [];
+    let lastStart = -Infinity;
+    for (const n of sorted) {
+      const ev = events[events.length - 1];
+      // A strum spreads its notes over a few hundredths of a second.
+      if (ev && n.start - lastStart < 0.045 && n.start - ev.start < 0.09) {
+        const twin = ev.notes.find((m) => m.midi === n.midi);
+        if (twin) twin.end = Math.max(twin.end, n.end);
+        else ev.notes.push(eventNote(n));
+      } else {
+        events.push({ start: n.start, notes: [eventNote(n)] });
+      }
+      lastStart = n.start;
+    }
+    for (const ev of events) ev.notes.sort((a, b) => a.midi - b.midi);
+    return events;
+  }
+
+  function eventNote(n) {
+    const amp = n.amp === undefined ? 1 : n.amp;
+    // "Unsure" notes are ones the detector was half-hearted about; the fingering step is allowed
+    // to leave them out if playing them would mean an implausible leap.
+    const unsure = amp < 0.5 || (n.onset !== undefined && n.onset < 0.7);
+    return { midi: n.midi, end: n.end, amp, unsure };
+  }
+
+  /* ---------- Fretboard placement ---------- */
+
+  const MAX_SHAPES = 18;
+  const BEAM_WIDTH = 28;
+  const DROP_COST = 2.5;
+
+  /* Every way to hold a set of pitches at once: one string each, within reach of one hand. */
+  function shapesFor(midis, tuning) {
+    const shapes = [];
+    const pos = [];
+    const rec = (i, used, lo, hi) => {
+      if (i === midis.length) {
+        shapes.push(scoreShape(pos.slice(), lo, hi));
+        return;
+      }
+      for (let s = 0; s < tuning.length; s++) {
+        if (used & (1 << s)) continue;
+        const fret = midis[i] - tuning[s];
+        if (fret < 0 || fret > MAX_FRET) continue;
+        let nlo = lo;
+        let nhi = hi;
+        if (fret > 0) {
+          nlo = Math.min(lo, fret);
+          nhi = Math.max(hi, fret);
+          if (nhi - nlo > 4) continue;
+        }
+        pos.push({ string: s, fret, midi: midis[i] });
+        rec(i + 1, used | (1 << s), nlo, nhi);
+        pos.pop();
+      }
+    };
+    rec(0, 0, Infinity, -Infinity);
+    shapes.sort((a, b) => a.cost - b.cost);
+    return shapes.slice(0, MAX_SHAPES);
+  }
+
+  function scoreShape(notes, lo, hi) {
+    let cost = 0;
+    const fretted = lo !== Infinity;
+    if (fretted) {
+      cost += lo * 0.2 + (hi > 12 ? (hi - 12) * 0.25 : 0);
+      if (hi - lo === 4) cost += 1.5;
+      else if (hi - lo === 3) cost += 0.2;
+      // One finger can bar the lowest fret; the other three each hold one note.
+      if (notes.filter((n) => n.fret > lo).length > 3) cost += 3;
+    }
+    // Pitches normally rise with the strings; a crossed shape is awkward.
+    for (let i = 0; i < notes.length; i++) {
+      for (let j = i + 1; j < notes.length; j++) if (notes[i].string > notes[j].string) cost += 1;
+    }
+    return { notes, lo: fretted ? lo : null, hi: fretted ? hi : null, cost };
+  }
+
+  /* Choose a string and fret for every note of every event. The search carries the state of the
+     fretting hand along the piece: which fret position it is in, and which strings are still
+     ringing, so that an arpeggio comes out as the chord shape it is held in and the hand only
+     shifts position when it has to. Returns, per event, a list of { string, fret, midi }. */
+  function fingerEvents(events, tuning) {
+    let beam = [{ cost: 0, ha: null, hb: null, sounding: [], prev: null, shape: null }];
+    for (const ev of events) {
+      let pitches = ev.notes.filter((n) => tuning.some((open) => n.midi - open >= 0 && n.midi - open <= MAX_FRET));
+      let shapes = [];
+      // If the whole chord can't be held, let go of the quietest notes until it can.
+      while (pitches.length) {
+        shapes = shapesFor(pitches.map((n) => n.midi), tuning);
+        if (shapes.length) break;
+        const quietest = pitches.reduce((a, n) => (n.amp < a.amp ? n : a));
+        pitches = pitches.filter((n) => n !== quietest);
+      }
+      if (!shapes.length) {
+        beam = beam.map((st) => ({ cost: st.cost, ha: st.ha, hb: st.hb, sounding: st.sounding, prev: st, shape: null }));
+        continue;
+      }
+      const endOf = {};
+      for (const n of pitches) endOf[n.midi] = n.end;
+      // Second option: play only the notes the detector was sure of. Costly, so it is taken
+      // only when a faint note would otherwise force a big jump or an unplayable stretch.
+      const sure = pitches.filter((n) => !n.unsure);
+      if (sure.length < pitches.length) {
+        const penalty = (pitches.length - sure.length) * DROP_COST;
+        const fewer = sure.length ? shapesFor(sure.map((n) => n.midi), tuning) : [{ notes: [], lo: null, hi: null, cost: 0 }];
+        shapes = shapes.concat(fewer.slice(0, 8).map((sh) => Object.assign({}, sh, { cost: sh.cost + penalty })));
+      }
+
+      const next = new Map();
+      for (const st of beam) {
+        const ringing = st.sounding.filter((r) => r.end > ev.start + 0.05);
+        for (const sh of shapes) {
+          let cost = st.cost + sh.cost;
+          let lo = sh.lo === null ? Infinity : sh.lo;
+          let hi = sh.hi === null ? -Infinity : sh.hi;
+          const kept = [];
+          for (const r of ringing) {
+            const same = sh.notes.find((n) => n.string === r.string);
+            if (same) {
+              // Fretting a string that should still be ringing would cut that note short.
+              if (same.fret !== r.fret) cost += 2;
+            } else {
+              kept.push(r);
+              if (r.fret > 0) {
+                lo = Math.min(lo, r.fret);
+                hi = Math.max(hi, r.fret);
+              }
+            }
+          }
+          if (hi - lo > 4) cost += (hi - lo - 4) * 1.5;
+
+          // The hand sits with its first finger somewhere in [a, b] to reach this shape.
+          let ha = st.ha;
+          let hb = st.hb;
+          if (sh.lo !== null) {
+            const b = sh.lo;
+            const a = Math.min(b, Math.max(1, sh.hi - 3));
+            if (ha === null) {
+              ha = a;
+              hb = b;
+            } else if (a > hb) {
+              cost += a - hb;
+              ha = hb = a;
+            } else if (b < ha) {
+              cost += ha - b;
+              ha = hb = b;
+            } else {
+              ha = Math.max(ha, a);
+              hb = Math.min(hb, b);
+            }
+          }
+
+          const sounding = kept.concat(sh.notes.map((n) => ({ string: n.string, fret: n.fret, end: endOf[n.midi] })));
+          sounding.sort((x, y) => x.string - y.string);
+          const key = ha + "," + hb + "|" + sounding.map((n) => n.string + ":" + n.fret).join(",");
+          const seen = next.get(key);
+          if (!seen || cost < seen.cost) next.set(key, { cost, ha, hb, sounding, prev: st, shape: sh });
+        }
+      }
+      beam = Array.from(next.values()).sort((x, y) => x.cost - y.cost).slice(0, BEAM_WIDTH);
+    }
+
+    const result = new Array(events.length);
+    let st = beam[0];
+    for (let i = events.length - 1; i >= 0; i--) {
+      result[i] = st.shape ? st.shape.notes : [];
+      st = st.prev;
     }
     return result;
   }
 
+  /* Single-line convenience wrapper: a position for each pitch in turn (null if unplayable). */
+  function assignFrets(midis, tuning) {
+    const events = midis.map((midi, i) => ({ start: i, notes: [{ midi, end: i + 0.9, amp: 1 }] }));
+    return fingerEvents(events, tuning).map((notes) => (notes.length ? { string: notes[0].string, fret: notes[0].fret } : null));
+  }
+
   /* Notes -> grid columns. A column is an array of six cells (low string first), each a fret or null. */
   function notesToColumns(notes, tuning, mode, bpm) {
-    const placed = assignFrets(notes.map((n) => n.midi), tuning);
-    const kept = [];
-    const positions = [];
-    notes.forEach((n, i) => {
-      if (placed[i]) {
-        kept.push(n);
-        positions.push(placed[i]);
-      }
+    const fingered = [];
+    const events = groupEvents(notes);
+    fingerEvents(events, tuning).forEach((placed, i) => {
+      if (placed.length) fingered.push({ start: events[i].start, placed });
     });
-    const layout = layoutNotes(kept, mode, bpm);
+    const layout = layoutNotes(fingered, mode, bpm);
     const cols = [];
-    kept.forEach((_, i) => {
+    let count = 0;
+    fingered.forEach((ev, i) => {
       const c = layout.steps[i];
       while (cols.length <= c) cols.push(emptyColumn());
-      cols[c][positions[i].string] = positions[i].fret;
+      for (const p of ev.placed) {
+        cols[c][p.string] = p.fret;
+        count++;
+      }
     });
-    return { cols, bpm: layout.bpm, count: kept.length };
+    return { cols, bpm: layout.bpm, count };
+  }
+
+  /* Where the fretting hand is, read back off the tab: the piece is split into the longest runs
+     that fit under one hand without shifting, and each run is named by its lowest fret (its
+     "position"). Returns [{ col, fret }] at each point the position changes. */
+  function handPositions(cols) {
+    const marks = [];
+    let lo = Infinity;
+    let hi = -Infinity;
+    let startCol = -1;
+    const close = () => {
+      if (startCol < 0) return;
+      if (!marks.length || marks[marks.length - 1].fret !== lo) marks.push({ col: startCol, fret: lo });
+    };
+    cols.forEach((col, c) => {
+      let clo = Infinity;
+      let chi = -Infinity;
+      for (const v of col) {
+        if (v !== null && v > 0) {
+          clo = Math.min(clo, v);
+          chi = Math.max(chi, v);
+        }
+      }
+      if (clo === Infinity) return;
+      const nlo = Math.min(lo, clo);
+      const nhi = Math.max(hi, chi);
+      if (startCol >= 0 && nhi - nlo <= Math.max(3, chi - clo)) {
+        lo = nlo;
+        hi = nhi;
+      } else {
+        close();
+        lo = clo;
+        hi = chi;
+        startCol = c;
+      }
+    });
+    close();
+    return marks;
+  }
+
+  function roman(n) {
+    const table = [[10, "X"], [9, "IX"], [5, "V"], [4, "IV"], [1, "I"]];
+    let out = "";
+    for (const [value, sym] of table) {
+      while (n >= value) {
+        out += sym;
+        n -= value;
+      }
+    }
+    return out;
   }
 
   function emptyColumn() {
@@ -421,7 +670,19 @@
     const labelWidth = Math.max(...labels.map((l) => l.length));
     const lines = [];
     if (title) lines.push(title, "");
+    const marks = handPositions(cols);
     for (let b = 0; b < bars; b += perLine) {
+      // Position markers (roman numerals) sit above the column where the hand shifts.
+      const from = b * STEPS_PER_BAR;
+      const to = Math.min(bars, b + perLine) * STEPS_PER_BAR;
+      let above = "";
+      for (const m of marks) {
+        if (m.col < from || m.col >= to) continue;
+        const bar = Math.floor(m.col / STEPS_PER_BAR) - b;
+        const x = labelWidth + 1 + bar * (STEPS_PER_BAR * 2 + 2) + 1 + (m.col % STEPS_PER_BAR) * 2;
+        above = above.padEnd(Math.max(x, above.length + (above ? 1 : 0))) + roman(m.fret);
+      }
+      if (above) lines.push(above);
       for (let s = tuning.length - 1; s >= 0; s--) {
         let line = labels[s].padEnd(labelWidth) + "|";
         for (let bar = b; bar < Math.min(bars, b + perLine); bar++) {
@@ -453,6 +714,11 @@
     createTracker,
     analyzeSamples,
     layoutNotes,
+    cleanPolyNotes,
+    groupEvents,
+    fingerEvents,
+    handPositions,
+    roman,
     assignFrets,
     notesToColumns,
     emptyColumn,
