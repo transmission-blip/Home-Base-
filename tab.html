@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Tab Transcriber</title>
+<link rel="stylesheet" href="tab.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="top">
+      <h1>Tab Transcriber</h1>
+      <nav>
+        <a class="nav-link" href="index.html">Tuner</a>
+        <a class="nav-link" href="recorder.html">Recorder</a>
+      </nav>
+    </header>
+
+    <section class="panel listen">
+      <button id="listenBtn" class="big-btn">● Listen and transcribe</button>
+      <button id="fileBtn" class="small-btn">Transcribe an audio file</button>
+      <input type="file" id="fileInput" accept="audio/*" hidden />
+      <div class="heard">
+        <div class="heard-note" id="heardNote">–</div>
+        <div class="heard-pos" id="heardPos">&nbsp;</div>
+      </div>
+      <div class="meter" title="Input level"><div class="meter-fill" id="meter"></div></div>
+      <p class="status" id="status">Play a take, press Stop, and it's written out as tab. New takes are added after what's already there.</p>
+    </section>
+
+    <section class="panel settings">
+      <label class="field wide">Title
+        <input type="text" id="title" placeholder="Untitled" />
+      </label>
+      <label class="field">Tuning
+        <select id="tuning"></select>
+      </label>
+      <label class="field" title="Chords and fingerpicking: records your take and works it out when you stop. Single notes: writes the tab live as you play, one note at a time.">Hears
+        <select id="detect">
+          <option value="full">Chords and fingerpicking</option>
+          <option value="quick">Single notes, live</option>
+        </select>
+      </label>
+      <label class="field" title="How note timing becomes spacing on the tab.">Rhythm
+        <select id="mode">
+          <option value="auto">Follow my playing</option>
+          <option value="bpm">Snap to tempo</option>
+          <option value="even">Evenly spaced</option>
+        </select>
+      </label>
+      <label class="field" title="Tempo for playback, and for 'Snap to tempo'.">BPM
+        <input type="number" id="bpm" min="40" max="240" value="100" />
+      </label>
+    </section>
+
+    <section class="panel toolbar">
+      <button id="playBtn" class="small-btn accent" title="Play from the selected bar (Space)">▶ Play</button>
+      <button id="undoBtn" class="small-btn" title="Undo (Ctrl+Z)">Undo</button>
+      <button id="insertBtn" class="small-btn" title="Insert an empty column at the cursor">+ Column</button>
+      <button id="deleteBtn" class="small-btn" title="Delete the column at the cursor">− Column</button>
+      <span class="spacer"></span>
+      <button id="copyBtn" class="small-btn">Copy as text</button>
+      <button id="downloadBtn" class="small-btn">Download .txt</button>
+      <button id="clearBtn" class="small-btn danger">Clear</button>
+    </section>
+
+    <section class="tab" id="tab" tabindex="0" aria-label="Tablature. Select a position and type a fret number."></section>
+
+    <section class="pad" id="pad" aria-label="Fret entry"></section>
+
+    <p class="hint">
+      Tap any spot on a string and type a fret (two digits quickly for 10 and up). Arrow keys move,
+      Backspace clears. Each column is a sixteenth note. Roman numerals above the tab mark where
+      the fretting hand shifts: <strong>V</strong> means first finger at the 5th fret. The same note
+      can be played in several places on the neck, so strings and positions are a best guess at the
+      easiest fingering, not something the microphone can hear. Chord detection uses
+      <a href="https://github.com/spotify/basic-pitch">Basic Pitch</a> and runs entirely in your browser.
+    </p>
+  </div>
+
+  <script src="tab-core.js"></script>
+  <script src="tab-poly.js"></script>
+  <script src="tab.js"></script>
+</body>
+</html>
