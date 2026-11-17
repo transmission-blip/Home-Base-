@@ -36,14 +36,14 @@ const TUNINGS = {
     ],
   },
   openD6: {
-    label: "Open D6 (D A D F# A B)",
+    label: "Open D6 (D A D F# B D)",
     strings: [
       { name: "D", octave: 2, freq: 73.42 },
       { name: "A", octave: 2, freq: 110.0 },
       { name: "D", octave: 3, freq: 146.83 },
       { name: "F#", octave: 3, freq: 185.0 },
-      { name: "A", octave: 3, freq: 220.0 },
       { name: "B", octave: 3, freq: 246.94 },
+      { name: "D", octave: 4, freq: 293.66 },
     ],
   },
 };
