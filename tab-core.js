@@ -15,7 +15,7 @@
     dadgad: { label: "DADGAD (D A D G A D)", midi: [38, 45, 50, 55, 57, 62] },
     openG: { label: "Open G (D G D G B D)", midi: [38, 43, 50, 55, 59, 62] },
     openD: { label: "Open D (D A D F# A D)", midi: [38, 45, 50, 54, 57, 62] },
-    openD6: { label: "Open D6 (D A D F# A B)", midi: [38, 45, 50, 54, 57, 59] },
+    openD6: { label: "Open D6 (D A D F# B D)", midi: [38, 45, 50, 54, 59, 62] },
   };
 
   function pitchClass(midi) {
