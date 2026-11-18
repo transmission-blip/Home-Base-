@@ -1050,9 +1050,52 @@ function setStatus(msg, isError) {
   els.status.classList.toggle("error", !!isError);
 }
 
+/* iPhones mute web audio when the ring/silent switch is on silent, unless the page says it is
+   a music player. Newer Safari has an API for that; older Safari needs a silent <audio> element
+   playing to switch the phone into music mode. */
+let silentAudio = null;
+
+function setAudioSession(type) {
+  if (navigator.audioSession) {
+    try {
+      if (navigator.audioSession.type !== type) navigator.audioSession.type = type;
+    } catch (e) {}
+    return;
+  }
+  if (type === "playback" && !silentAudio && !mic) {
+    const quiet = new AudioBuffer({ length: 4410, numberOfChannels: 1, sampleRate: 44100 });
+    silentAudio = new Audio(URL.createObjectURL(encodeWav(quiet)));
+    silentAudio.loop = true;
+    silentAudio.setAttribute("playsinline", "");
+    silentAudio.play().catch(() => (silentAudio = null));
+  }
+}
+
+/* Try to get audio running. Must be first called from a tap. Resolves true once it runs. */
+async function wakeAudio() {
+  ensureCtx();
+  if (ctx.state === "running") return true;
+  try {
+    await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 1500))]);
+  } catch (e) {}
+  return ctx.state === "running";
+}
+
+const PAUSED_MSG = "Your phone paused the audio (a call, the lock screen or another app). Tap again to continue.";
+
+function onCtxStateChange() {
+  if (ctx.state === "running") return;
+  if (state.playing || state.recording) {
+    stop();
+    setStatus(PAUSED_MSG, true);
+  }
+}
+
 function ensureCtx() {
   if (!ctx) {
+    setAudioSession(mic ? "play-and-record" : "playback");
     ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: "interactive" });
+    ctx.addEventListener("statechange", onCtxStateChange);
     master = buildMaster(ctx, Number(els.master.value));
     clickBus = ctx.createGain();
     clickBus.gain.value = 0.5;
@@ -1060,9 +1103,17 @@ function ensureCtx() {
     backingInit(ctx, master);
     tracks.forEach(attachStrip);
   }
-  if (ctx.state === "suspended") ctx.resume();
+  // iOS uses "interrupted" as well as "suspended"; either way, a tap may restart it
+  if (ctx.state !== "running" && ctx.state !== "closed") ctx.resume().catch(() => {});
   return ctx;
 }
+
+// Any tap on the page is a chance to restart audio that the phone paused
+["pointerdown", "touchend", "keydown"].forEach((type) =>
+  document.addEventListener(type, () => {
+    if (ctx && ctx.state !== "running" && ctx.state !== "closed") ctx.resume().catch(() => {});
+  }, true)
+);
 
 function anySolo() {
   return tracks.some((t) => t.solo);
@@ -1147,13 +1198,22 @@ function beginTransport(t0, pos, silent) {
   updateTransportUi();
 }
 
-function play() {
-  if (state.playing) return;
+let starting = false;
+
+async function play() {
+  if (state.playing || starting) return;
   if (!tracks.length && !backingActive()) {
     setStatus("Record or import a track first, or switch on Drums or Chords.");
     return;
   }
-  ensureCtx();
+  starting = true;
+  const running = await wakeAudio();
+  starting = false;
+  if (!running) {
+    setStatus("The phone hasn't let audio start yet. Tap ▶ again.", true);
+    return;
+  }
+  if (state.playing) return;
   if (state.pos >= projectLength() - 0.05) state.pos = 0;
   setStatus("");
   beginTransport(ctx.currentTime + 0.06, state.pos);
@@ -1215,70 +1275,70 @@ setInterval(() => {
 
 /* ---------- Microphone ---------- */
 
-const RECORDER_WORKLET = `
-class TakeRecorder extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.on = false;
-    this.start = 0;
-    this.size = 2048;
-    this.l = new Float32Array(this.size);
-    this.r = new Float32Array(this.size);
-    this.n = 0;
-    this.port.onmessage = (e) => {
-      if (e.data.cmd === "start") {
-        this.on = true;
-        this.start = e.data.frame;
-        this.n = 0;
-      } else if (e.data.cmd === "stop") {
-        this.flush();
-        this.on = false;
-        this.port.postMessage({ done: true });
+/* Fallback recorder for browsers where the AudioWorklet can't be loaded. It talks the same
+   message protocol as recorder-worklet.js, so the rest of the code doesn't care which one it got. */
+function makeScriptRecorder() {
+  const node = ctx.createScriptProcessor(2048, 2, 2);
+  let on = false;
+  let startFrame = 0;
+  const port = {
+    onmessage: null,
+    postMessage(msg) {
+      if (msg.cmd === "start") {
+        on = true;
+        startFrame = msg.frame;
+      } else if (msg.cmd === "stop") {
+        on = false;
+        setTimeout(() => port.onmessage && port.onmessage({ data: { done: true } }), 0);
       }
-    };
-  }
-  flush() {
-    if (this.n) {
-      this.port.postMessage({ l: this.l.slice(0, this.n), r: this.r.slice(0, this.n) });
-      this.n = 0;
-    }
-  }
-  process(inputs) {
-    if (!this.on) return true;
-    const inp = inputs[0] || [];
-    const l = inp[0];
-    const r = inp[1] || l;
-    let from = this.start - currentFrame;
-    if (from >= 128) return true;
+    },
+  };
+  node.onaudioprocess = (e) => {
+    if (!on || !port.onmessage) return;
+    const input = e.inputBuffer;
+    const l = input.getChannelData(0);
+    const r = input.numberOfChannels > 1 ? input.getChannelData(1) : l;
+    const blockStart = Math.round(e.playbackTime * ctx.sampleRate);
+    let from = startFrame - blockStart;
+    if (from >= l.length) return;
     if (from < 0) from = 0;
-    for (let i = from; i < 128; i++) {
-      this.l[this.n] = l ? l[i] : 0;
-      this.r[this.n] = r ? r[i] : 0;
-      if (++this.n === this.size) this.flush();
-    }
-    return true;
-  }
+    port.onmessage({ data: { l: l.slice(from), r: r.slice(from) } });
+  };
+  node.port = port;
+  return node;
 }
-registerProcessor("take-recorder", TakeRecorder);
-`;
+
+async function makeRecorderNode() {
+  if (ctx.audioWorklet && window.AudioWorkletNode) {
+    try {
+      if (!workletReady) workletReady = ctx.audioWorklet.addModule("recorder-worklet.js");
+      await workletReady;
+      return new AudioWorkletNode(ctx, "take-recorder");
+    } catch (e) {
+      workletReady = null;
+    }
+  }
+  return makeScriptRecorder();
+}
 
 let workletReady = null;
 
 async function ensureMic(deviceId) {
   ensureCtx();
   if (mic && !deviceId) return mic;
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !ctx.audioWorklet) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     throw new Error("This browser can't record audio here (needs HTTPS and a modern browser).");
   }
   const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
   if (deviceId) audio.deviceId = { exact: deviceId };
-  const stream = await navigator.mediaDevices.getUserMedia({ audio });
-
-  if (!workletReady) {
-    const url = URL.createObjectURL(new Blob([RECORDER_WORKLET], { type: "application/javascript" }));
-    workletReady = ctx.audioWorklet.addModule(url);
+  setAudioSession("play-and-record");
+  if (silentAudio) {
+    silentAudio.pause();
+    silentAudio = null;
   }
-  await workletReady;
+  const stream = await navigator.mediaDevices.getUserMedia({ audio });
+  // Switching the mic on can pause the audio on iPhones; try to bring it straight back
+  if (ctx.state !== "running") ctx.resume().catch(() => {});
 
   if (mic) {
     mic.source.disconnect();
@@ -1291,7 +1351,7 @@ async function ensureMic(deviceId) {
   let recorder = mic && mic.recorder;
   let monitor = mic && mic.monitor;
   if (!recorder) {
-    recorder = new AudioWorkletNode(ctx, "take-recorder");
+    recorder = await makeRecorderNode();
     const sink = ctx.createGain();
     sink.gain.value = 0;
     recorder.connect(sink);
@@ -1362,8 +1422,13 @@ async function record() {
   if (arming) return;
   arming = true;
   try {
+    ensureCtx(); // start audio inside the tap, before any waiting
     if (state.playing) await stop();
     await ensureMic();
+    if (!(await wakeAudio())) {
+      setStatus("The phone hasn't let audio start yet. Tap ● again to record.", true);
+      return;
+    }
   } catch (err) {
     setStatus(micErrorMessage(err), true);
     return;
@@ -1402,7 +1467,7 @@ async function finishRecording() {
   const skip = Math.round((Math.max(0, Number(els.latency.value) || 0) / 1000) * sr);
   const len = take.frames - skip;
   if (len < sr * 0.2) {
-    setStatus("Take was too short — nothing saved.");
+    setStatus(take.frames ? "Take was too short — nothing saved." : "No sound reached the app from the microphone. Check that Safari is allowed to use it, then try again.", !take.frames);
     updateEmpty();
     return;
   }
@@ -2200,3 +2265,9 @@ loadProject().then(() => {
   updateEmpty();
   requestAnimationFrame(tick);
 });
+
+// Show unexpected errors on screen, so a problem is visible instead of things silently not working
+window.addEventListener("error", (e) => setStatus("Something went wrong: " + e.message, true));
+window.addEventListener("unhandledrejection", (e) =>
+  setStatus("Something went wrong: " + ((e.reason && e.reason.message) || e.reason), true)
+);
