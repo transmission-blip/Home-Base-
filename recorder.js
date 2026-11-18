@@ -677,8 +677,26 @@ function fxTypes(fx) {
 }
 
 /* A full track strip: fx -> volume -> pan -> destination */
+/* Phone mics record quietly when the phone's own volume boost is off (we turn it off so takes
+   aren't squashed). Quiet tracks get brought up to a full level before the effects. */
+function levelTrim(buffer) {
+  let peak = 0;
+  for (let c = 0; c < buffer.numberOfChannels; c++) {
+    const d = buffer.getChannelData(c);
+    for (let i = 0; i < d.length; i++) {
+      const v = d[i] < 0 ? -d[i] : d[i];
+      if (v > peak) peak = v;
+    }
+  }
+  if (!peak || peak >= 0.5) return 1;
+  return Math.min(0.9 / peak, 32); // at most +30 dB, so near-silent takes don't become pure hiss
+}
+
 function buildStrip(ctx, track, dest, anySolo) {
+  const input = ctx.createGain();
+  input.gain.value = track.trim || 1;
   const fx = buildFx(ctx, track.fx);
+  input.connect(fx.input);
   const vol = ctx.createGain();
   const pan = ctx.createStereoPanner();
   vol.gain.value = audibleGain(track, anySolo);
@@ -686,7 +704,7 @@ function buildStrip(ctx, track, dest, anySolo) {
   fx.output.connect(vol);
   vol.connect(pan);
   pan.connect(dest);
-  return { fx, vol, pan, types: fxTypes(track.fx) };
+  return { input, fx, vol, pan, types: fxTypes(track.fx) };
 }
 
 function buildMaster(ctx, level) {
@@ -775,7 +793,7 @@ function detectTuning(buffer) {
       re[i] = v * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N));
       im[i] = 0;
     }
-    if (Math.sqrt(energy / N) < 0.003) continue;
+    if (Math.sqrt(energy / N) < 0.0003) continue;
     fft(re, im);
     let max = 0;
     for (let i = lo - 1; i <= hi + 1; i++) {
@@ -879,13 +897,13 @@ function centsText(c) {
 }
 
 /* Noise gate: turns the track down whenever it falls below the threshold (hiss between phrases). */
-function gateBuffer(buffer, gate) {
+function gateBuffer(buffer, gate, trim = 1) {
   const sr = buffer.sampleRate;
   const n = buffer.length;
   const chans = [];
   for (let c = 0; c < buffer.numberOfChannels; c++) chans.push(buffer.getChannelData(c));
   const out = new AudioBuffer({ length: n, numberOfChannels: chans.length, sampleRate: sr });
-  const open = Math.pow(10, gate.threshold / 20);
+  const open = Math.pow(10, gate.threshold / 20) / trim; // threshold is set on the boosted level
   const close = open * 0.5;
   const floor = gate.type === "soft" ? 0.2 : 0;
   const look = Math.round(0.004 * sr);
@@ -978,7 +996,7 @@ async function processSource(track) {
       }
       buf = track.tuned.buffer;
     }
-    if (gating) buf = gateBuffer(buf, track.gate);
+    if (gating) buf = gateBuffer(buf, track.gate, track.trim);
     track.playBuffer = buf === track.buffer ? null : buf;
     drawWave(track);
     fitView();
@@ -1062,7 +1080,7 @@ function setAudioSession(type) {
     } catch (e) {}
     return;
   }
-  if (type === "playback" && !silentAudio && !mic) {
+  if (type === "playback" && !silentAudio && !micOn()) {
     const quiet = new AudioBuffer({ length: 4410, numberOfChannels: 1, sampleRate: 44100 });
     silentAudio = new Audio(URL.createObjectURL(encodeWav(quiet)));
     silentAudio.loop = true;
@@ -1122,12 +1140,13 @@ function anySolo() {
 function attachStrip(track) {
   if (!ctx) return;
   if (track.nodes) {
+    track.nodes.input.disconnect();
     track.nodes.fx.dispose();
     track.nodes.vol.disconnect();
     track.nodes.pan.disconnect();
   }
   track.nodes = buildStrip(ctx, track, master, anySolo());
-  if (track.source) track.source.connect(track.nodes.fx.input);
+  if (track.source) track.source.connect(track.nodes.input);
   if (track.source && state.playing) track.nodes.fx.run(true);
 }
 
@@ -1170,7 +1189,7 @@ function startSources(t0, pos) {
     if (pos >= end) return;
     const src = ctx.createBufferSource();
     src.buffer = trackBuf(t);
-    src.connect(t.nodes.fx.input);
+    src.connect(t.nodes.input);
     if (pos < t.offset) src.start(t0 + (t.offset - pos), 0);
     else src.start(t0, pos - t.offset);
     t.source = src;
@@ -1322,15 +1341,37 @@ async function makeRecorderNode() {
 }
 
 let workletReady = null;
+let chosenDevice = null;
+
+function micOn() {
+  return !!(mic && mic.stream);
+}
+
+/* Switch the microphone off. While it's on, iPhones go into "call mode", which plays everything
+   back much quieter (or through the earpiece), so it is only kept on while it's needed. */
+function releaseMic(force) {
+  if (!micOn() || state.recording) return;
+  if (els.monitor.checked && !force) return;
+  els.monitor.checked = false;
+  mic.source.disconnect();
+  mic.stream.getTracks().forEach((t) => t.stop());
+  mic.stream = null;
+  mic.source = null;
+  els.micBtn.textContent = "Test microphone";
+  els.meter.style.width = "0%";
+  setAudioSession("playback");
+}
 
 async function ensureMic(deviceId) {
   ensureCtx();
-  if (mic && !deviceId) return mic;
+  if (deviceId) chosenDevice = deviceId;
+  if (micOn() && !deviceId) return mic;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     throw new Error("This browser can't record audio here (needs HTTPS and a modern browser).");
   }
   const audio = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
   if (deviceId) audio.deviceId = { exact: deviceId };
+  else if (chosenDevice) audio.deviceId = { ideal: chosenDevice };
   setAudioSession("play-and-record");
   if (silentAudio) {
     silentAudio.pause();
@@ -1340,7 +1381,7 @@ async function ensureMic(deviceId) {
   // Switching the mic on can pause the audio on iPhones; try to bring it straight back
   if (ctx.state !== "running") ctx.resume().catch(() => {});
 
-  if (mic) {
+  if (micOn()) {
     mic.source.disconnect();
     mic.stream.getTracks().forEach((t) => t.stop());
   }
@@ -1372,8 +1413,7 @@ async function ensureMic(deviceId) {
     els.latency.value = Math.min(500, Math.round(total * 1000));
   }
 
-  els.micBtn.textContent = "Microphone on";
-  els.micBtn.disabled = true;
+  els.micBtn.textContent = "Turn microphone off";
   listDevices(stream);
   return mic;
 }
@@ -1453,6 +1493,11 @@ async function record() {
 }
 
 async function finishRecording() {
+  await saveTake();
+  releaseMic();
+}
+
+async function saveTake() {
   const take = rec;
   await new Promise((resolve) => {
     take.done = resolve;
@@ -1519,7 +1564,7 @@ function micErrorMessage(err) {
 
 /* ---------- Tracks ---------- */
 
-function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = false, solo = false, fx, tune, gate, speed, reversed = false, fxOpen = false, color }, skipSave) {
+function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = false, solo = false, fx, tune, gate, speed, trim, reversed = false, fxOpen = false, color }, skipSave) {
   const track = {
     id: id || nextId,
     name,
@@ -1533,6 +1578,7 @@ function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = 
     tune: Object.assign({ type: "off", cents: 0 }, tune),
     gate: Object.assign({ type: "off", threshold: -45 }, gate),
     speed: Object.assign({ type: "off", rate: 1 }, speed),
+    trim: trim > 0 ? trim : levelTrim(buffer),
     reversed,
     fxOpen,
     playBuffer: null,
@@ -1557,6 +1603,7 @@ function addTrack({ id, name, buffer, offset = 0, volume = 0.8, pan = 0, mute = 
 function removeTrack(track) {
   stopSource(track);
   if (track.nodes) {
+    track.nodes.input.disconnect();
     track.nodes.fx.dispose();
     track.nodes.vol.disconnect();
     track.nodes.pan.disconnect();
@@ -1895,6 +1942,7 @@ function sizeCanvas(canvas) {
 }
 
 function drawWave(track) {
+  const gain = track.trim || 1;
   const canvas = track.canvas;
   const g = sizeCanvas(canvas);
   const W = canvas.width;
@@ -1918,8 +1966,8 @@ function drawWave(track) {
       if (v < lo) lo = v;
       if (v > hi) hi = v;
     }
-    const top = mid - hi * mid * 0.95;
-    const bottom = mid - lo * mid * 0.95;
+    const top = mid - Math.min(1, hi * gain) * mid * 0.95;
+    const bottom = mid - Math.max(-1, lo * gain) * mid * 0.95;
     g.fillRect(x0 + c, top, 1, Math.max(1, bottom - top));
   }
 }
@@ -2002,7 +2050,7 @@ function tick() {
   const leftPct = Math.min(100, (pos / state.viewDur) * 100) + "%";
   tracks.forEach((t) => (t.playhead.style.left = leftPct));
 
-  if (mic) {
+  if (micOn()) {
     mic.analyser.getFloatTimeDomainData(mic.meterBuf);
     let peak = 0;
     for (let i = 0; i < mic.meterBuf.length; i++) peak = Math.max(peak, Math.abs(mic.meterBuf[i]));
@@ -2042,7 +2090,7 @@ async function renderMix() {
     const strip = buildStrip(off, t, bus, solo);
     const src = off.createBufferSource();
     src.buffer = trackBuf(t);
-    src.connect(strip.fx.input);
+    src.connect(strip.input);
     src.start(t.offset);
   });
   return off.startRendering();
@@ -2160,8 +2208,8 @@ function writeMeta() {
     playWhileRec: els.playWhileRec.checked,
     countIn: els.countIn.checked,
     master: els.master.value,
-    tracks: tracks.map(({ id, name, offset, volume, pan, mute, solo, fx, tune, gate, speed, reversed, fxOpen, color }) => ({
-      id, name, offset, volume, pan, mute, solo, fx, tune, gate, speed, reversed, fxOpen, color,
+    tracks: tracks.map(({ id, name, offset, volume, pan, mute, solo, fx, tune, gate, speed, trim, reversed, fxOpen, color }) => ({
+      id, name, offset, volume, pan, mute, solo, fx, tune, gate, speed, trim, reversed, fxOpen, color,
     })),
   };
   try {
@@ -2211,7 +2259,12 @@ els.master.addEventListener("input", () => {
 [els.bpm, els.metro, els.countIn, els.playWhileRec].forEach((e) => e.addEventListener("change", saveMeta));
 els.latency.addEventListener("change", () => localStorage.setItem("hb-latency", els.latency.value));
 els.monitor.addEventListener("change", async () => {
-  if (els.monitor.checked && !mic) {
+  if (!els.monitor.checked) {
+    if (micOn()) mic.monitor.gain.setTargetAtTime(0, ctx.currentTime, 0.015);
+    releaseMic();
+    return;
+  }
+  if (!micOn()) {
     try {
       await ensureMic();
     } catch (err) {
@@ -2223,14 +2276,21 @@ els.monitor.addEventListener("change", async () => {
   if (mic) mic.monitor.gain.setTargetAtTime(els.monitor.checked ? 1 : 0, ctx.currentTime, 0.015);
 });
 els.micBtn.addEventListener("click", () => {
+  if (micOn()) {
+    if (state.recording) return;
+    releaseMic(true);
+    setStatus("Microphone off. It switches on by itself when you record.");
+    return;
+  }
   ensureMic().then(
-    () => setStatus("Microphone ready."),
+    () => setStatus("Microphone on — the meter shows your level. It switches off after each take so playback stays loud."),
     (err) => setStatus(micErrorMessage(err), true)
   );
 });
 els.device.addEventListener("change", () => {
   if (state.recording) return;
-  ensureMic(els.device.value).catch((err) => setStatus(micErrorMessage(err), true));
+  chosenDevice = els.device.value;
+  if (micOn()) ensureMic(els.device.value).catch((err) => setStatus(micErrorMessage(err), true));
 });
 els.importBtn.addEventListener("click", () => els.file.click());
 els.file.addEventListener("change", () => {
