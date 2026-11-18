@@ -405,7 +405,25 @@ function onSwitch(target, summaryEl, name) {
     backingChanged();
   });
   sync();
-  return labelled("On", box, "check");
+  const label = labelled("On", box, "check");
+  label.turnOn = () => {
+    if (target.on) return;
+    target.on = box.checked = true;
+    sync();
+    backingChanged();
+  };
+  return label;
+}
+
+/* Changing anything in a panel (other than its volume or On switch) means you want to hear it */
+function autoOn(body, sw) {
+  const wake = (e) => {
+    if (sw.contains(e.target) || e.target.type === "range") return;
+    if (e.type === "click" && e.target.tagName !== "BUTTON") return;
+    sw.turnOn();
+  };
+  body.addEventListener("change", wake);
+  body.addEventListener("click", wake);
 }
 
 function renderDrums(root) {
@@ -447,8 +465,10 @@ function renderDrums(root) {
     paint();
     backingChanged();
   });
+  const drumSwitch = onSwitch(drums, title, "Drums");
+  autoOn(body, drumSwitch);
   controls.append(
-    onSwitch(drums, title, "Drums"),
+    drumSwitch,
     labelled("Beat", presetSel),
     labelled("Swing", swing, "slider"),
     labelled("Volume", vol, "slider"),
@@ -555,8 +575,10 @@ function renderChords(root) {
     backingChanged();
   });
 
+  const chordSwitch = onSwitch(chords, title, "Chords");
+  autoOn(body, chordSwitch);
   controls.append(
-    onSwitch(chords, title, "Chords"),
+    chordSwitch,
     labelled("Key", keySel),
     scaleSel,
     labelled("Progression", presetSel),
